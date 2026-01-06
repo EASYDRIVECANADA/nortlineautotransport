@@ -179,6 +179,16 @@ create policy "orders_update_staff" on public.orders
     )
   );
 
+create policy "orders_delete_staff" on public.orders
+  for delete
+  to authenticated
+  using (
+    exists (
+      select 1 from public.staff_profiles sp
+      where sp.user_id = auth.uid()
+    )
+  );
+
 create policy "order_events_select_staff" on public.order_events
   for select
   to authenticated

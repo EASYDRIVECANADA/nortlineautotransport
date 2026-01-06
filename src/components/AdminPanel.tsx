@@ -1,7 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Download, Search, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, Download, Pencil, Search, ShieldCheck, Trash2 } from 'lucide-react';
 import { computeTotals, listLocalOrders, updateLocalOrderStatus, type LocalOrder, type OrderStatus } from '../orders/localOrders';
-import { listStaffOrders, updateOrderStatusAsStaff, type DbOrderStatus, type StaffOrderRow } from '../orders/supabaseOrders';
+import {
+  deleteOrderAsStaff,
+  getOrderEventsForStaffOrder,
+  listStaffOrders,
+  updateOrderFormDataAsStaff,
+  updateOrderStatusAsStaff,
+  type DbOrderStatus,
+  type DbPaymentStatus,
+  type StaffOrderRow,
+} from '../orders/supabaseOrders';
 import { supabase } from '../lib/supabaseClient';
 
 interface AdminPanelProps {
@@ -62,6 +71,21 @@ const getWorkOrderFields = (order: LocalOrder): WorkOrderFields => {
   };
 };
 
+type PaymentFilter = DbPaymentStatus | 'all';
+
+type EditableFields = {
+  pickup_name: string;
+  pickup_phone: string;
+  pickup_address: string;
+  dropoff_name: string;
+  dropoff_phone: string;
+  dropoff_address: string;
+  vin: string;
+  transaction_id: string;
+  release_form_number: string;
+  arrival_date: string;
+};
+
 export default function AdminPanel({ onBack, embedded = false, role = 'admin' }: AdminPanelProps) {
   const isLocalDev = import.meta.env.DEV && window.location.hostname === 'localhost';
   const isEmployee = role === 'employee';
@@ -71,6 +95,21 @@ export default function AdminPanel({ onBack, embedded = false, role = 'admin' }:
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<OrderStatus | 'all'>('all');
+  const [paymentFilter, setPaymentFilter] = useState<PaymentFilter>('paid');
+
+  const [isEditing, setIsEditing] = useState(false);
+  const [editFields, setEditFields] = useState<EditableFields>({
+    pickup_name: '',
+    pickup_phone: '',
+    pickup_address: '',
+    dropoff_name: '',
+    dropoff_phone: '',
+    dropoff_address: '',
+    vin: '',
+    transaction_id: '',
+    release_form_number: '',
+    arrival_date: '',
+  });
 
   const [nextStatus, setNextStatus] = useState<OrderStatus>('Scheduled');
   const [note, setNote] = useState('');
@@ -147,10 +186,60 @@ export default function AdminPanel({ onBack, embedded = false, role = 'admin' }:
     setNextStatus(selected.status);
   }, [orders, selectedId]);
 
+  useEffect(() => {
+    const id = String(selectedId ?? '').trim();
+    if (!id) return;
+    const selected = orders.find((o) => o.id === id) ?? null;
+    if (!selected) return;
+
+    const wo = getWorkOrderFields(selected);
+    setEditFields({
+      pickup_name: wo.pickup_name,
+      pickup_phone: wo.pickup_phone,
+      pickup_address: wo.pickup_address,
+      dropoff_name: wo.dropoff_name,
+      dropoff_phone: wo.dropoff_phone,
+      dropoff_address: wo.dropoff_address,
+      vin: wo.vin,
+      transaction_id: wo.transaction_id,
+      release_form_number: wo.release_form_number,
+      arrival_date: wo.arrival_date,
+    });
+  }, [orders, selectedId]);
+
+  useEffect(() => {
+    const id = String(selectedId ?? '').trim();
+    if (!id) return;
+    if (isLocalDev) return;
+    if (!supabase) return;
+    const selected = orders.find((o) => o.id === id) as AdminOrder | undefined;
+    const dbId = String(selected?.db_id ?? '').trim();
+    if (!dbId) return;
+
+    let active = true;
+    void getOrderEventsForStaffOrder(dbId)
+      .then((rows) => {
+        if (!active) return;
+        const mapped = rows.map((ev) => ({ status: ev.status as OrderStatus, at: ev.at, note: ev.note ?? undefined }));
+        setOrders((prev) => prev.map((o) => (o.id === id ? { ...o, status_events: mapped } : o)));
+      })
+      .catch(() => {
+        // ignore
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [isLocalDev, orders, selectedId]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return orders
       .filter((o) => (statusFilter === 'all' ? true : o.status === statusFilter))
+      .filter((o) => {
+        if (paymentFilter === 'all') return true;
+        return (o.payment_status ?? 'unpaid') === paymentFilter;
+      })
       .filter((o) => {
         if (!q) return true;
         const wo = getWorkOrderFields(o);
@@ -174,7 +263,7 @@ export default function AdminPanel({ onBack, embedded = false, role = 'admin' }:
         return hay.includes(q);
       })
       .sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1));
-  }, [orders, search, statusFilter]);
+  }, [orders, paymentFilter, search, statusFilter]);
 
   const selectedOrder = useMemo(() => {
     const id = String(selectedId ?? '').trim();
@@ -274,6 +363,79 @@ export default function AdminPanel({ onBack, embedded = false, role = 'admin' }:
       });
   };
 
+  const saveEdits = async () => {
+    setActionError(null);
+    if (isLocalDev) {
+      setActionError('Editing is not available in local development mode.');
+      return;
+    }
+    if (!selectedOrder) return;
+    const dbId = String((selectedOrder as AdminOrder).db_id ?? '').trim();
+    if (!dbId) {
+      setActionError('Failed to update order.');
+      return;
+    }
+
+    const base = readObj(selectedOrder.form_data) ?? {};
+    const next = JSON.parse(JSON.stringify(base)) as Record<string, unknown>;
+
+    const pickup = (readObj(next.pickup_location) ?? {}) as Record<string, unknown>;
+    pickup.name = editFields.pickup_name;
+    pickup.phone = editFields.pickup_phone;
+    pickup.address = editFields.pickup_address;
+    next.pickup_location = pickup;
+
+    const dropoff = (readObj(next.dropoff_location) ?? {}) as Record<string, unknown>;
+    dropoff.name = editFields.dropoff_name;
+    dropoff.phone = editFields.dropoff_phone;
+    dropoff.address = editFields.dropoff_address;
+    next.dropoff_location = dropoff;
+
+    const vehicle = (readObj(next.vehicle) ?? {}) as Record<string, unknown>;
+    vehicle.vin = editFields.vin;
+    next.vehicle = vehicle;
+
+    const txn = (readObj(next.transaction) ?? {}) as Record<string, unknown>;
+    txn.transaction_id = editFields.transaction_id;
+    txn.release_form_number = editFields.release_form_number;
+    txn.arrival_date = editFields.arrival_date;
+    next.transaction = txn;
+
+    try {
+      await updateOrderFormDataAsStaff(dbId, next);
+      setIsEditing(false);
+      reload();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : 'Failed to update order.');
+    }
+  };
+
+  const deleteSelectedOrder = async () => {
+    setActionError(null);
+    if (!selectedOrder) return;
+    if (isLocalDev) {
+      setActionError('Delete is not available in local development mode.');
+      return;
+    }
+    const dbId = String((selectedOrder as AdminOrder).db_id ?? '').trim();
+    if (!dbId) {
+      setActionError('Failed to delete order.');
+      return;
+    }
+
+    const ok = window.confirm(`Delete order ${selectedOrder.id}? This cannot be undone.`);
+    if (!ok) return;
+
+    try {
+      await deleteOrderAsStaff(dbId);
+      setSelectedId(null);
+      setIsEditing(false);
+      reload();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : 'Failed to delete order.');
+    }
+  };
+
   return (
     <div className={embedded ? 'bg-gray-50' : 'min-h-screen bg-gray-50'}>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6">
@@ -340,6 +502,18 @@ export default function AdminPanel({ onBack, embedded = false, role = 'admin' }:
                       </option>
                     ))}
                   </select>
+
+                  <select
+                    value={paymentFilter}
+                    onChange={(e) => setPaymentFilter(e.target.value as PaymentFilter)}
+                    className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm"
+                  >
+                    <option value="paid">Paid only</option>
+                    <option value="all">All payments</option>
+                    <option value="unpaid">Unpaid</option>
+                    <option value="pending">Pending</option>
+                    <option value="failed">Failed</option>
+                  </select>
                 </div>
 
                 <div className="mt-3 text-xs text-gray-500">Showing {filtered.length} orders</div>
@@ -366,7 +540,22 @@ export default function AdminPanel({ onBack, embedded = false, role = 'admin' }:
                         >
                           <div className="flex items-center justify-between gap-2">
                             <div className="text-sm font-semibold text-gray-900 truncate">{o.id}</div>
-                            <div className="text-[11px] font-semibold text-gray-600">{o.status}</div>
+                            <div className="flex items-center gap-2">
+                              <div className="text-[11px] font-semibold text-gray-600">{o.status}</div>
+                              <div
+                                className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${
+                                  (o.payment_status ?? 'unpaid') === 'paid'
+                                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                    : (o.payment_status ?? 'unpaid') === 'pending'
+                                      ? 'border-amber-200 bg-amber-50 text-amber-700'
+                                      : (o.payment_status ?? 'unpaid') === 'failed'
+                                        ? 'border-red-200 bg-red-50 text-red-700'
+                                        : 'border-gray-200 bg-gray-50 text-gray-700'
+                                }`}
+                              >
+                                {(o.payment_status ?? 'unpaid').toUpperCase()}
+                              </div>
+                            </div>
                           </div>
                           <div className="mt-1 text-xs text-gray-600 truncate">{pickupLabel && dropoffLabel ? `${pickupLabel} → ${dropoffLabel}` : o.route_area}</div>
                           <div className="mt-1 flex items-center justify-between gap-2 text-xs text-gray-600">
@@ -401,28 +590,166 @@ export default function AdminPanel({ onBack, embedded = false, role = 'admin' }:
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
                           <div className="text-xs text-gray-500">Pickup</div>
-                          <div className="mt-1 text-sm font-semibold text-gray-900">{wo.pickup_address || '-'}</div>
-                          <div className="mt-1 text-xs text-gray-600">{[wo.pickup_name, wo.pickup_phone].filter(Boolean).join(' • ') || ' '}</div>
+                          {isEditing ? (
+                            <>
+                              <input
+                                value={editFields.pickup_address}
+                                onChange={(e) => setEditFields((p) => ({ ...p, pickup_address: e.target.value }))}
+                                className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-2 py-1 text-sm"
+                                placeholder="Pickup address"
+                              />
+                              <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                <input
+                                  value={editFields.pickup_name}
+                                  onChange={(e) => setEditFields((p) => ({ ...p, pickup_name: e.target.value }))}
+                                  className="w-full rounded-lg border border-gray-300 bg-white px-2 py-1 text-sm"
+                                  placeholder="Pickup name"
+                                />
+                                <input
+                                  value={editFields.pickup_phone}
+                                  onChange={(e) => setEditFields((p) => ({ ...p, pickup_phone: e.target.value }))}
+                                  className="w-full rounded-lg border border-gray-300 bg-white px-2 py-1 text-sm"
+                                  placeholder="Pickup phone"
+                                />
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <div className="mt-1 text-sm font-semibold text-gray-900">{wo.pickup_address || '-'}</div>
+                              <div className="mt-1 text-xs text-gray-600">{[wo.pickup_name, wo.pickup_phone].filter(Boolean).join(' • ') || ' '}</div>
+                            </>
+                          )}
                         </div>
                         <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
                           <div className="text-xs text-gray-500">Drop-off</div>
-                          <div className="mt-1 text-sm font-semibold text-gray-900">{wo.dropoff_address || '-'}</div>
-                          <div className="mt-1 text-xs text-gray-600">{[wo.dropoff_name, wo.dropoff_phone].filter(Boolean).join(' • ') || ' '}</div>
+                          {isEditing ? (
+                            <>
+                              <input
+                                value={editFields.dropoff_address}
+                                onChange={(e) => setEditFields((p) => ({ ...p, dropoff_address: e.target.value }))}
+                                className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-2 py-1 text-sm"
+                                placeholder="Drop-off address"
+                              />
+                              <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                <input
+                                  value={editFields.dropoff_name}
+                                  onChange={(e) => setEditFields((p) => ({ ...p, dropoff_name: e.target.value }))}
+                                  className="w-full rounded-lg border border-gray-300 bg-white px-2 py-1 text-sm"
+                                  placeholder="Drop-off name"
+                                />
+                                <input
+                                  value={editFields.dropoff_phone}
+                                  onChange={(e) => setEditFields((p) => ({ ...p, dropoff_phone: e.target.value }))}
+                                  className="w-full rounded-lg border border-gray-300 bg-white px-2 py-1 text-sm"
+                                  placeholder="Drop-off phone"
+                                />
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <div className="mt-1 text-sm font-semibold text-gray-900">{wo.dropoff_address || '-'}</div>
+                              <div className="mt-1 text-xs text-gray-600">{[wo.dropoff_name, wo.dropoff_phone].filter(Boolean).join(' • ') || ' '}</div>
+                            </>
+                          )}
                         </div>
                         <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
                           <div className="text-xs text-gray-500">Vehicle</div>
                           <div className="mt-1 text-sm font-semibold text-gray-900">{wo.vehicle || '-'}</div>
-                          <div className="mt-1 text-xs text-gray-600">VIN: {wo.vin || '-'}</div>
+                          {isEditing ? (
+                            <div className="mt-2">
+                              <input
+                                value={editFields.vin}
+                                onChange={(e) => setEditFields((p) => ({ ...p, vin: e.target.value }))}
+                                className="w-full rounded-lg border border-gray-300 bg-white px-2 py-1 text-sm"
+                                placeholder="VIN"
+                              />
+                            </div>
+                          ) : (
+                            <div className="mt-1 text-xs text-gray-600">VIN: {wo.vin || '-'}</div>
+                          )}
                         </div>
                         <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
                           <div className="text-xs text-gray-500">Identifiers</div>
-                          <div className="mt-1 text-xs text-gray-700">Transaction ID: {wo.transaction_id || '-'}</div>
-                          <div className="mt-1 text-xs text-gray-700">Release Form #: {wo.release_form_number || '-'}</div>
-                          <div className="mt-1 text-xs text-gray-700">Arrival Date: {wo.arrival_date || '-'}</div>
+                          {isEditing ? (
+                            <div className="mt-2 space-y-2">
+                              <input
+                                value={editFields.transaction_id}
+                                onChange={(e) => setEditFields((p) => ({ ...p, transaction_id: e.target.value }))}
+                                className="w-full rounded-lg border border-gray-300 bg-white px-2 py-1 text-sm"
+                                placeholder="Transaction ID"
+                              />
+                              <input
+                                value={editFields.release_form_number}
+                                onChange={(e) => setEditFields((p) => ({ ...p, release_form_number: e.target.value }))}
+                                className="w-full rounded-lg border border-gray-300 bg-white px-2 py-1 text-sm"
+                                placeholder="Release Form #"
+                              />
+                              <input
+                                value={editFields.arrival_date}
+                                onChange={(e) => setEditFields((p) => ({ ...p, arrival_date: e.target.value }))}
+                                className="w-full rounded-lg border border-gray-300 bg-white px-2 py-1 text-sm"
+                                placeholder="Arrival date"
+                              />
+                            </div>
+                          ) : (
+                            <>
+                              <div className="mt-1 text-xs text-gray-700">Transaction ID: {wo.transaction_id || '-'}</div>
+                              <div className="mt-1 text-xs text-gray-700">Release Form #: {wo.release_form_number || '-'}</div>
+                              <div className="mt-1 text-xs text-gray-700">Arrival Date: {wo.arrival_date || '-'}</div>
+                            </>
+                          )}
                         </div>
                       </div>
                     );
                   })()}
+
+                  {!isEmployee ? (
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-2xl border border-gray-200 bg-white p-4">
+                      <div>
+                        <div className="text-sm font-semibold text-gray-900">Actions</div>
+                        <div className="text-xs text-gray-600">Edit details or delete this order.</div>
+                      </div>
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        {isEditing ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => setIsEditing(false)}
+                              className="inline-flex justify-center rounded-xl border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50 transition-colors"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              onClick={saveEdits}
+                              className="inline-flex justify-center rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white hover:bg-gray-800 transition-colors"
+                            >
+                              Save
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => setIsEditing(true)}
+                              className="inline-flex items-center justify-center gap-2 rounded-xl border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50 transition-colors"
+                            >
+                              <Pencil className="h-4 w-4" />
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={deleteSelectedOrder}
+                              className="inline-flex items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-100 transition-colors"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                              Delete
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
 
                   <div className="rounded-2xl border border-gray-200 bg-white overflow-hidden">
                     <div className="p-4 border-b border-gray-100">

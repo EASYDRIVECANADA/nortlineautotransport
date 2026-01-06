@@ -85,7 +85,9 @@ export const OFFICIAL_CITY_TOTAL_PRICES: Array<{ city: string; total_price: numb
   { city: 'Quebec City', total_price: 435, match: (addr) => /\bqu(e|é)bec\s*city\b/i.test(addr) || /\bville\s*de\s*qu(e|é)bec\b/i.test(addr) },
 ];
 
-export const SERVICE_AREAS = OFFICIAL_CITY_TOTAL_PRICES.map((x) => x.city);
+const EXTRA_SERVICE_AREAS = ['Ottawa'];
+
+export const SERVICE_AREAS = Array.from(new Set([...OFFICIAL_CITY_TOTAL_PRICES.map((x) => x.city), ...EXTRA_SERVICE_AREAS]));
 
 export const SERVICE_AREA_GEOCODE_QUERY: Record<string, string> = {
   'Toronto (Oshawa Region)': 'Oshawa, ON, Canada',
@@ -101,6 +103,7 @@ export const SERVICE_AREA_GEOCODE_QUERY: Record<string, string> = {
   Barrie: 'Barrie, ON, Canada',
   'North Bay': 'North Bay, ON, Canada',
   Timmins: 'Timmins, ON, Canada',
+  Ottawa: 'Ottawa, ON, Canada',
   Montreal: 'Montreal, QC, Canada',
   'Montreal (Trois-Rivières Region)': 'Trois-Rivières, QC, Canada',
   'Quebec City': 'Quebec City, QC, Canada',

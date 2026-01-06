@@ -133,6 +133,32 @@ export const updateOrderStatusAsStaff = async (orderId: string, status: DbOrderS
   return { at };
 };
 
+export const getOrderEventsForStaffOrder = async (orderId: string) => {
+  const supabase = requireSupabase();
+  const { data, error } = await supabase
+    .from('order_events')
+    .select('status, note, at')
+    .eq('order_id', orderId)
+    .order('at', { ascending: false });
+
+  if (error) throw error;
+  return (Array.isArray(data) ? data : []) as DbOrderEventRow[];
+};
+
+export const updateOrderFormDataAsStaff = async (orderId: string, formData: unknown) => {
+  const supabase = requireSupabase();
+  const at = new Date().toISOString();
+  const { error } = await supabase.from('orders').update({ form_data: formData as never, updated_at: at }).eq('id', orderId);
+  if (error) throw error;
+  return { at };
+};
+
+export const deleteOrderAsStaff = async (orderId: string) => {
+  const supabase = requireSupabase();
+  const { error } = await supabase.from('orders').delete().eq('id', orderId);
+  if (error) throw error;
+};
+
 export const listMyOrders = async () => {
   const supabase = requireSupabase();
   const user = await getCurrentUser();
