@@ -135,9 +135,12 @@ export const updateOrderStatusAsStaff = async (orderId: string, status: DbOrderS
 
 export const listMyOrders = async () => {
   const supabase = requireSupabase();
+  const user = await getCurrentUser();
+  if (!user?.id) return [];
   const { data, error } = await supabase
     .from('orders')
     .select('id, order_code, status, payment_status, created_at, updated_at')
+    .eq('user_id', user.id)
     .order('created_at', { ascending: false });
 
   if (error) throw error;
