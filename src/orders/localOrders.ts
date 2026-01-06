@@ -184,7 +184,8 @@ export const makeLocalOrderId = () => {
 
 export const computeTotals = (subtotal: number, routeArea: string): OrderTotals => {
   const sub = Number(subtotal);
-  const safeSubtotal = Number.isFinite(sub) && sub >= 0 ? sub : 0;
+  const safeSubtotalRaw = Number.isFinite(sub) && sub >= 0 ? sub : 0;
+  const safeSubtotal = Math.round(safeSubtotalRaw * 100) / 100;
   const r = String(routeArea ?? '').trim().toLowerCase();
   const isQc = r.includes('montreal') || r.includes('quebec');
   const tax_rate = isQc ? 0.14975 : 0.13;

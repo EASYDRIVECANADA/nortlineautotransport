@@ -15,6 +15,12 @@ export const handler = async (event) => {
     const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY;
 
     if (!stripeSecret) return { statusCode: 500, body: 'Missing STRIPE_SECRET_KEY' };
+    if (String(stripeSecret).trim().startsWith('pk_')) {
+      return {
+        statusCode: 500,
+        body: 'Invalid STRIPE_SECRET_KEY: you set a publishable key (pk_...). Use a secret key (sk_...) from Stripe Developers → API keys.',
+      };
+    }
     if (!supabaseUrl) return { statusCode: 500, body: 'Missing SUPABASE_URL' };
     if (!supabaseAnonKey) return { statusCode: 500, body: 'Missing SUPABASE_ANON_KEY' };
 
@@ -62,6 +68,9 @@ export const handler = async (event) => {
     const taxRate = isQc ? 0.14975 : 0.13;
     const taxLabel = isQc ? 'QC (GST+QST)' : 'ON (HST)';
     const taxAmount = Math.round(amount * taxRate * 100) / 100;
+
+    const checkoutCurrency = 'cad';
+    const taxRateLabel = isQc ? (taxRate * 100).toFixed(3) : (taxRate * 100).toFixed(0);
 
     const stripe = new Stripe(stripeSecret, { apiVersion: '2024-06-20' });
 
@@ -113,7 +122,7 @@ export const handler = async (event) => {
         {
           quantity: 1,
           price_data: {
-            currency: (order.currency || 'CAD').toLowerCase(),
+            currency: checkoutCurrency,
             unit_amount: Math.round(amount * 100),
             product_data: {
               name: `EasyDrive Transport (${order.order_code})`,
@@ -123,10 +132,10 @@ export const handler = async (event) => {
         {
           quantity: 1,
           price_data: {
-            currency: (order.currency || 'CAD').toLowerCase(),
+            currency: checkoutCurrency,
             unit_amount: Math.round(taxAmount * 100),
             product_data: {
-              name: `Tax ${taxLabel} (${(taxRate * 100).toFixed(3)}%)`,
+              name: `Tax ${taxLabel} (${taxRateLabel}%)`,
             },
           },
         },

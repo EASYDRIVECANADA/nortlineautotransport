@@ -397,6 +397,15 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
   const [costData, setCostData] = useState<CostData | null>(null);
   const [showPaymentSuccess, setShowPaymentSuccess] = useState(false);
   const [paymentSuccessReceiptId, setPaymentSuccessReceiptId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!showCheckout) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [showCheckout]);
   const [draftDocCount, setDraftDocCount] = useState<number | null>(null);
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
   const [disclosuresAccepted, setDisclosuresAccepted] = useState({
@@ -2180,13 +2189,13 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
           }}
         >
           <div className="absolute inset-0 bg-gradient-to-br from-black/70 via-black/50 to-black/70 backdrop-blur-sm"></div>
-          <div className="relative w-full max-w-xl rounded-2xl bg-white shadow-2xl border border-gray-200 overflow-hidden">
+          <div className="relative w-full max-w-xl max-h-[85vh] rounded-2xl bg-white shadow-2xl border border-gray-200 overflow-hidden">
             <div className="bg-gradient-to-r from-cyan-500 to-blue-600 text-white px-6 py-4">
               <div className="text-lg font-semibold">Checkout</div>
               <div className="text-sm opacity-90">Review details and pay securely</div>
             </div>
 
-            <div className="p-6 space-y-5">
+            <div className="p-6 space-y-5 overflow-y-auto ocean-scrollbar" style={{ maxHeight: 'calc(85vh - 72px - 88px)' }}>
               {(() => {
                 const routeArea = String(costData?.pricingCity ?? formData?.dropoff_location?.service_area ?? '').trim();
                 const serviceTypeLabel =
