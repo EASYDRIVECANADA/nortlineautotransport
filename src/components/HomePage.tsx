@@ -46,6 +46,26 @@ export default function HomePage({ onLogin }: HomePageProps) {
       return;
     }
     setGisError(null);
+
+    try {
+      await new Promise<void>((resolve) => {
+        let finished = false;
+        const done = () => {
+          if (finished) return;
+          finished = true;
+          resolve();
+        };
+        window.setTimeout(done, 350);
+        try {
+          window.dispatchEvent(new CustomEvent('ed_before_sign_in', { detail: { resolve: done } }));
+        } catch {
+          done();
+        }
+      });
+    } catch {
+      // ignore
+    }
+
     const redirectTo = `${window.location.origin}/`;
     await supabase.auth.signInWithOAuth({
       provider: 'google',

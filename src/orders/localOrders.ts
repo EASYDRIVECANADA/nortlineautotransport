@@ -35,6 +35,10 @@ export type LocalOrderDocument = {
   mime: string;
   size: number;
   kind: 'required' | 'optional' | 'unknown';
+  storage?: {
+    bucket: string;
+    path: string;
+  };
 };
 
 export type LocalOrder = {

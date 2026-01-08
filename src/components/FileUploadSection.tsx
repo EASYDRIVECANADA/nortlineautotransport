@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Upload, FileText, X, CheckCircle, Navigation } from 'lucide-react';
 import { MapContainer, Marker, TileLayer, useMap, useMapEvents } from 'react-leaflet';
@@ -33,6 +33,288 @@ interface FileUploadSectionProps {
   onContinueToSignIn?: () => void;
   persistState?: boolean;
 }
+
+const sanitizeDigits = (v: string) => v.replace(/[^0-9]/g, '');
+const sanitizeDigitsDash = (v: string) => v.replace(/[^0-9-]/g, '');
+const sanitizePhone = (v: string) => v.replace(/[^0-9+()\-\s]/g, '');
+const sanitizeDateLike = (v: string) => v.replace(/[^0-9/-]/g, '');
+const sanitizeNoDigits = (v: string) => v.replace(/[0-9]/g, '');
+const sanitizeLettersSpaces = (v: string) => v.replace(/[^a-zA-Z\s'.-]/g, '');
+
+const DRAFT_FILES_DB = 'ed_draft_files_db';
+const DRAFT_FILES_STORE = 'draft_files';
+
+const openDraftFilesDb = (): Promise<IDBDatabase> =>
+  new Promise((resolve, reject) => {
+    try {
+      const req = indexedDB.open(DRAFT_FILES_DB, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(DRAFT_FILES_STORE)) {
+          db.createObjectStore(DRAFT_FILES_STORE, { keyPath: 'draftId' });
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    } catch (e) {
+      reject(e);
+    }
+  });
+
+const putDraftFiles = async (draftId: string, files: File[]): Promise<void> => {
+  const db = await openDraftFilesDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(DRAFT_FILES_STORE, 'readwrite');
+    const store = tx.objectStore(DRAFT_FILES_STORE);
+    const record = {
+      draftId,
+      files: files.map((f) => ({ name: f.name, type: f.type, lastModified: f.lastModified, blob: f })),
+    };
+    const req = store.put(record);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  }).finally(() => {
+    db.close();
+  });
+};
+
+const getDraftFiles = async (draftId: string): Promise<File[] | null> => {
+  const db = await openDraftFilesDb();
+  try {
+    const record = await new Promise<unknown>((resolve, reject) => {
+      const tx = db.transaction(DRAFT_FILES_STORE, 'readonly');
+      const store = tx.objectStore(DRAFT_FILES_STORE);
+      const req = store.get(draftId);
+      req.onsuccess = () => resolve(req.result ?? null);
+      req.onerror = () => reject(req.error);
+    });
+    if (!isRecord(record)) return null;
+    const filesRaw = record.files;
+    if (!Array.isArray(filesRaw)) return null;
+    return filesRaw
+      .map((f) => {
+        if (!isRecord(f)) return null;
+        const blob = f.blob;
+        if (!(blob instanceof Blob)) return null;
+        const name = typeof f.name === 'string' ? f.name : 'document';
+        const type = typeof f.type === 'string' ? f.type : 'application/octet-stream';
+        const lastModified = typeof f.lastModified === 'number' ? f.lastModified : Date.now();
+        try {
+          return new File([blob], name, { type, lastModified });
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean) as File[];
+  } finally {
+    db.close();
+  }
+};
+
+const deleteDraftFiles = async (draftId: string): Promise<void> => {
+  const db = await openDraftFilesDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(DRAFT_FILES_STORE, 'readwrite');
+    const store = tx.objectStore(DRAFT_FILES_STORE);
+    const req = store.delete(draftId);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  }).finally(() => {
+    db.close();
+  });
+};
+
+type AddressBreakdown = {
+  street: string;
+  number: string;
+  city: string;
+  province: string;
+  postal_code: string;
+  country: string;
+};
+
+function formatFileSize(bytes: number): string {
+  if (bytes === 0) return '0 Bytes';
+  const k = 1024;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+}
+
+const emptyAddressBreakdown = (): AddressBreakdown => ({
+  street: '',
+  number: '',
+  city: '',
+  province: '',
+  postal_code: '',
+  country: 'Canada',
+});
+
+const normalizeWhitespace = (value: string) => value.replace(/\s+/g, ' ').trim();
+
+const looksLikeStreetAddress = (value: string) => /\d/.test(String(value ?? ''));
+
+const normalizePostalCode = (value: string) => {
+  const raw = normalizeWhitespace(String(value ?? '').toUpperCase());
+  if (!raw) return '';
+  const compact = raw.replace(/[^A-Z0-9]/g, '');
+  if (compact.length === 6) return `${compact.slice(0, 3)} ${compact.slice(3)}`;
+  return raw;
+};
+
+const buildAddressFromBreakdown = (b: AddressBreakdown) => {
+  const line1 = normalizeWhitespace(`${b.number} ${b.street}`.trim());
+  const city = normalizeWhitespace(b.city);
+  const prov = normalizeWhitespace(b.province);
+  const postal = normalizePostalCode(b.postal_code);
+  const country = normalizeWhitespace(b.country);
+
+  const parts: string[] = [];
+  if (line1) parts.push(line1);
+  if (city) parts.push(city);
+  const provPostal = normalizeWhitespace(`${prov} ${postal}`.trim());
+  if (provPostal) parts.push(provPostal);
+  if (country) parts.push(country);
+  return parts.join(', ');
+};
+
+const normalizeCountry = (value: string) => {
+  const raw = normalizeWhitespace(String(value ?? ''));
+  if (!raw) return '';
+  const upper = raw.toUpperCase();
+  if (upper === 'CA' || upper === 'CAN' || upper === 'CANADA') return 'Canada';
+  if (upper === 'US' || upper === 'USA' || upper === 'UNITED STATES' || upper === 'UNITED STATES OF AMERICA') return 'USA';
+  return raw;
+};
+
+const CAN_PROVINCE_CODES = new Set(['AB', 'BC', 'MB', 'NB', 'NL', 'NS', 'NT', 'NU', 'ON', 'PE', 'QC', 'SK', 'YT']);
+
+const extractProvincePostalFromLine = (line: string): { province: string; postal_code: string; remainder: string } => {
+  const s = normalizeWhitespace(line);
+  if (!s) return { province: '', postal_code: '', remainder: '' };
+
+  const postalMatch = s.match(/([A-Z]\d[A-Z])\s*([\d][A-Z]\d)/i);
+  const postal = postalMatch ? `${postalMatch[1].toUpperCase()} ${postalMatch[2].toUpperCase()}` : '';
+  const withoutPostal = normalizeWhitespace(s.replace(/([A-Z]\d[A-Z])\s*([\d][A-Z]\d)/i, '').trim());
+
+  const tokens = withoutPostal.split(' ').filter(Boolean);
+  let province = '';
+  let remainder = '';
+
+  if (tokens.length) {
+    const last = String(tokens[tokens.length - 1] ?? '').toUpperCase();
+    if (CAN_PROVINCE_CODES.has(last)) {
+      province = last;
+      remainder = normalizeWhitespace(tokens.slice(0, -1).join(' '));
+    } else {
+      const first = String(tokens[0] ?? '').toUpperCase();
+      if (CAN_PROVINCE_CODES.has(first)) {
+        province = first;
+        remainder = normalizeWhitespace(tokens.slice(1).join(' '));
+      } else {
+        province = normalizeWhitespace(withoutPostal);
+        remainder = '';
+      }
+    }
+  }
+
+  return { province, postal_code: postal, remainder };
+};
+
+const normalizeProvinceCountry = (provinceRaw: string, countryRaw: string) => {
+  let province = normalizeWhitespace(provinceRaw);
+  let country = normalizeCountry(countryRaw);
+
+  const provUpper = province.toUpperCase();
+  if (provUpper === 'CA' && !country) {
+    country = 'Canada';
+    province = '';
+  } else if (provUpper === 'CA' && country === 'Canada') {
+    province = '';
+  }
+
+  if (province && !CAN_PROVINCE_CODES.has(provUpper) && provUpper.length === 2 && country === 'Canada') {
+    // If it's a 2-letter code but not a Canadian province, don't force it into province.
+    province = '';
+  }
+
+  return { province, country: country || 'Canada' };
+};
+
+const parseAddressToBreakdown = (address: string): AddressBreakdown => {
+  const base = emptyAddressBreakdown();
+  const raw = normalizeWhitespace(address);
+  if (!raw) return base;
+
+  const parts = raw
+    .split(',')
+    .map((p) => normalizeWhitespace(p))
+    .filter(Boolean);
+
+  let country = '';
+  if (parts.length) {
+    const last = parts[parts.length - 1] ?? '';
+    const normalized = normalizeCountry(last);
+    if (normalized === 'Canada' || normalized === 'USA') {
+      country = normalized;
+      parts.pop();
+    }
+  }
+
+  let provPostal = parts.length ? parts[parts.length - 1] : '';
+  let city = parts.length >= 2 ? parts[parts.length - 2] : '';
+  let line1 = parts.length >= 3 ? parts[parts.length - 3] : parts[0] ?? '';
+
+  if (parts.length === 2) {
+    // Could be "line1, city province postal" or "line1, province postal".
+    line1 = parts[0] ?? '';
+    const second = parts[1] ?? '';
+    const inferred = extractProvincePostalFromLine(second);
+    if (inferred.province || inferred.postal_code) {
+      provPostal = normalizeWhitespace(`${inferred.province} ${inferred.postal_code}`.trim());
+      city = inferred.remainder;
+    } else {
+      city = '';
+      provPostal = second;
+    }
+  }
+
+  if (parts.length === 1) {
+    line1 = parts[0] ?? '';
+    city = '';
+    provPostal = '';
+  }
+
+  const provPostalExtracted = extractProvincePostalFromLine(provPostal);
+  const postal = provPostalExtracted.postal_code;
+  let province = provPostalExtracted.province;
+  if (province && province.length === 2) province = province.toUpperCase();
+
+  const line = normalizeWhitespace(line1);
+  let number = '';
+  let street = '';
+  const startsWithNumber = line.match(/^([0-9A-Z-]+)\s+(.*)$/i);
+  const endsWithNumber = line.match(/^(.*)\s+([0-9A-Z-]+)$/i);
+  if (startsWithNumber && /^[0-9]/.test(startsWithNumber[1])) {
+    number = startsWithNumber[1];
+    street = startsWithNumber[2];
+  } else if (endsWithNumber && /^[0-9]/.test(endsWithNumber[2])) {
+    street = endsWithNumber[1];
+    number = endsWithNumber[2];
+  } else {
+    street = line;
+  }
+
+  const normalized = normalizeProvinceCountry(province, country);
+  return {
+    street: street,
+    number: number,
+    city: normalizeWhitespace(city || provPostalExtracted.remainder),
+    province: normalized.province,
+    postal_code: postal,
+    country: normalized.country,
+  };
+};
 
 const PENDING_RECEIPT_PREFIX = 'ed_pending_receipt_order_';
 
@@ -88,12 +370,24 @@ type FormData = {
   pickup_location: {
     name: string;
     address: string;
+    street: string;
+    number: string;
+    city: string;
+    province: string;
+    postal_code: string;
+    country: string;
     phone: string;
   };
   dropoff_location: {
     name: string;
     phone: string;
     address: string;
+    street: string;
+    number: string;
+    city: string;
+    province: string;
+    postal_code: string;
+    country: string;
     lat: string;
     lng: string;
     service_area: string;
@@ -145,6 +439,15 @@ const readString = (value: unknown): string => {
   return '';
 };
 const readNumber = (value: unknown): number => (typeof value === 'number' ? value : Number(value));
+
+const pickBestAddressCandidate = (...values: unknown[]): string => {
+  const strings = values
+    .map((v) => readString(v).trim())
+    .filter(Boolean);
+  const withDigits = strings.find((s) => looksLikeStreetAddress(s));
+  return withDigits ?? strings[0] ?? '';
+};
+
 const pickFirstString = (...values: unknown[]): string => {
   for (const v of values) {
     const s = readString(v).trim();
@@ -239,89 +542,6 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
   const STORAGE_RECEIPTS_BY_USER_PREFIX = 'ed_receipts_by_user_';
 
   void hideHeader;
-
-  const DRAFT_FILES_DB = 'ed_draft_files_db';
-  const DRAFT_FILES_STORE = 'draft_files';
-
-  const openDraftFilesDb = (): Promise<IDBDatabase> =>
-    new Promise((resolve, reject) => {
-      try {
-        const req = indexedDB.open(DRAFT_FILES_DB, 1);
-        req.onupgradeneeded = () => {
-          const db = req.result;
-          if (!db.objectStoreNames.contains(DRAFT_FILES_STORE)) {
-            db.createObjectStore(DRAFT_FILES_STORE, { keyPath: 'draftId' });
-          }
-        };
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error);
-      } catch (e) {
-        reject(e);
-      }
-    });
-
-  const putDraftFiles = async (draftId: string, files: File[]): Promise<void> => {
-    const db = await openDraftFilesDb();
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(DRAFT_FILES_STORE, 'readwrite');
-      const store = tx.objectStore(DRAFT_FILES_STORE);
-      const record = {
-        draftId,
-        files: files.map((f) => ({ name: f.name, type: f.type, lastModified: f.lastModified, blob: f })),
-      };
-      const req = store.put(record);
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error);
-    }).finally(() => {
-      db.close();
-    });
-  };
-
-  const getDraftFiles = async (draftId: string): Promise<File[] | null> => {
-    const db = await openDraftFilesDb();
-    try {
-      const record = await new Promise<unknown>((resolve, reject) => {
-        const tx = db.transaction(DRAFT_FILES_STORE, 'readonly');
-        const store = tx.objectStore(DRAFT_FILES_STORE);
-        const req = store.get(draftId);
-        req.onsuccess = () => resolve(req.result ?? null);
-        req.onerror = () => reject(req.error);
-      });
-      if (!isRecord(record)) return null;
-      const filesRaw = record.files;
-      if (!Array.isArray(filesRaw)) return null;
-      return filesRaw
-        .map((f) => {
-          if (!isRecord(f)) return null;
-          const blob = f.blob;
-          if (!(blob instanceof Blob)) return null;
-          const name = typeof f.name === 'string' ? f.name : 'document';
-          const type = typeof f.type === 'string' ? f.type : 'application/octet-stream';
-          const lastModified = typeof f.lastModified === 'number' ? f.lastModified : Date.now();
-          try {
-            return new File([blob], name, { type, lastModified });
-          } catch {
-            return null;
-          }
-        })
-        .filter(Boolean) as File[];
-    } finally {
-      db.close();
-    }
-  };
-
-  const deleteDraftFiles = async (draftId: string): Promise<void> => {
-    const db = await openDraftFilesDb();
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(DRAFT_FILES_STORE, 'readwrite');
-      const store = tx.objectStore(DRAFT_FILES_STORE);
-      const req = store.delete(draftId);
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error);
-    }).finally(() => {
-      db.close();
-    });
-  };
 
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [userKey, setUserKey] = useState<string | null>(null);
@@ -430,6 +650,8 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
     }
   });
   const [isRouteRequiredOpen, setIsRouteRequiredOpen] = useState(false);
+  const [isDropoffValidationOpen, setIsDropoffValidationOpen] = useState(false);
+  const [dropoffValidationMissingFields, setDropoffValidationMissingFields] = useState<string[]>([]);
   const [formData, setFormData] = useState<FormData | null>(() => {
     if (!persistState) return null;
     try {
@@ -541,6 +763,117 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
     setSubmitMessage('Saved to drafts. You can pay later from Drafts.');
     setSubmitError(false);
   };
+
+  const saveDraftBeforeSignIn = useCallback(async () => {
+    if (uploadedFiles.length === 0) return;
+
+    const draftId = activeDraftId ?? `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const baseForm: FormData =
+      formData ??
+      ({
+        service: { service_type: 'pickup_one_way', vehicle_type: 'standard' },
+        vehicle: {
+          vin: '',
+          year: '',
+          make: '',
+          model: '',
+          transmission: '',
+          odometer_km: '',
+          exterior_color: '',
+        },
+        selling_dealership: { name: '', phone: '', address: '' },
+        buying_dealership: { name: '', phone: '', contact_name: '' },
+        pickup_location: {
+          name: '',
+          address: '',
+          ...emptyAddressBreakdown(),
+          phone: '',
+        },
+        dropoff_location: {
+          name: '',
+          phone: '',
+          address: '',
+          ...emptyAddressBreakdown(),
+          lat: '',
+          lng: '',
+          service_area: '',
+        },
+        transaction: { transaction_id: '', release_form_number: '', release_date: '', arrival_date: '' },
+        authorization: { released_by_name: '', released_to_name: '' },
+        dealer_notes: '',
+      } satisfies FormData);
+
+    const draft: CheckoutDraft = {
+      id: draftId,
+      createdAt: new Date().toISOString(),
+      formData: { ...baseForm, draft_source: String(baseForm.draft_source ?? '').trim() || 'manual' },
+      costData,
+      docCount: draftDocCount ?? uploadedFiles.length,
+      draftSource: 'manual',
+      needsExtraction: !formData,
+    };
+
+    try {
+      await putDraftFiles(
+        draftId,
+        uploadedFiles
+          .map((f) => f?.file)
+          .filter((f): f is File => Boolean(f))
+      );
+    } catch {
+      // ignore
+    }
+
+    try {
+      const raw = localStorage.getItem(STORAGE_DRAFTS);
+      const parsed = raw ? (JSON.parse(raw) as unknown) : null;
+      const existing = Array.isArray(parsed) ? (parsed as CheckoutDraft[]) : [];
+      const idx = existing.findIndex((d) => d && typeof d === 'object' && (d as CheckoutDraft).id === draftId);
+      if (idx >= 0) {
+        const next = [...existing];
+        next[idx] = draft;
+        localStorage.setItem(STORAGE_DRAFTS, JSON.stringify(next));
+      } else {
+        localStorage.setItem(STORAGE_DRAFTS, JSON.stringify([draft, ...existing]));
+      }
+    } catch {
+      // ignore
+    }
+
+    try {
+      window.dispatchEvent(new Event('ed_drafts_updated'));
+    } catch {
+      // ignore
+    }
+
+    setActiveDraftId(draftId);
+    setDraftDocCount(draft.docCount);
+  }, [activeDraftId, costData, draftDocCount, formData, uploadedFiles]);
+
+  useEffect(() => {
+    const onBeforeSignIn = (event: Event) => {
+      const detail = (event as CustomEvent).detail as unknown;
+      const resolve =
+        detail && typeof detail === 'object' && (detail as Record<string, unknown>).resolve
+          ? ((detail as Record<string, unknown>).resolve as unknown)
+          : null;
+      const done = typeof resolve === 'function' ? (resolve as () => void) : null;
+      void saveDraftBeforeSignIn()
+        .catch(() => undefined)
+        .finally(() => {
+          try {
+            done?.();
+          } catch {
+            // ignore
+          }
+        });
+    };
+
+    window.addEventListener('ed_before_sign_in', onBeforeSignIn as EventListener);
+    return () => {
+      window.removeEventListener('ed_before_sign_in', onBeforeSignIn as EventListener);
+    };
+  }, [saveDraftBeforeSignIn]);
 
   useEffect(() => {
     const onResumeDraft = (event: Event) => {
@@ -667,12 +1000,12 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
             const costPerKm = 2.50;
             const minimumCost = 150;
             const calculatedCost = Math.max(distanceKm * costPerKm, minimumCost);
-            
+
             return {
               distance: distanceKm,
               cost: Math.round(calculatedCost),
               duration: durationMin,
-              route: { geometry: route.geometry, polyline }
+              route: { geometry: route.geometry, polyline },
             };
           }
         }
@@ -820,9 +1153,9 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
         updateFormField('dropoff_location', 'lat', String(result.lat));
         updateFormField('dropoff_location', 'lng', String(result.lng));
 
+        // Don't write the service area label into address; address breakdown should stay a real address.
         if (!existingAddress) {
           suppressGeocodeRef.current = true;
-          updateFormField('dropoff_location', 'address', area);
         }
       } catch {
         // ignore
@@ -886,7 +1219,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
           const addr = await reverseGeocode(lat, lng);
           if (addr) {
             suppressGeocodeRef.current = true;
-            updateFormField('dropoff_location', 'address', addr);
+            handleDropoffAddressChange(addr);
           }
         } catch {
           // ignore
@@ -949,6 +1282,27 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
     const vehicleObj = isRecord(output.vehicle) ? output.vehicle : null;
     const sellingObj = isRecord(output.selling_dealership) ? output.selling_dealership : null;
     const buyingObj = isRecord(output.buying_dealership) ? output.buying_dealership : null;
+    const buyingObj2 = isRecord((output as Record<string, unknown>).buyingDealership)
+      ? ((output as Record<string, unknown>).buyingDealership as Record<string, unknown>)
+      : null;
+    const buyerDealershipObj = isRecord((output as Record<string, unknown>).buyer_dealership)
+      ? ((output as Record<string, unknown>).buyer_dealership as Record<string, unknown>)
+      : null;
+    const buyerDealershipObj2 = isRecord((output as Record<string, unknown>).buyerDealership)
+      ? ((output as Record<string, unknown>).buyerDealership as Record<string, unknown>)
+      : null;
+    const destinationDealershipObj = isRecord((output as Record<string, unknown>).destination_dealership)
+      ? ((output as Record<string, unknown>).destination_dealership as Record<string, unknown>)
+      : null;
+    const destinationDealershipObj2 = isRecord((output as Record<string, unknown>).destinationDealership)
+      ? ((output as Record<string, unknown>).destinationDealership as Record<string, unknown>)
+      : null;
+    const toDealershipObj = isRecord((output as Record<string, unknown>).to_dealership)
+      ? ((output as Record<string, unknown>).to_dealership as Record<string, unknown>)
+      : null;
+    const toDealershipObj2 = isRecord((output as Record<string, unknown>).toDealership)
+      ? ((output as Record<string, unknown>).toDealership as Record<string, unknown>)
+      : null;
     const pickupObj = isRecord(output.pickup_location) ? output.pickup_location : null;
     const dropoffObj = isRecord(output.dropoff_location) ? output.dropoff_location : null;
     const dropOffAltObj = isRecord((output as Record<string, unknown>).drop_off_location)
@@ -1065,29 +1419,154 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
 
     const sellingName = pickFirstString(
       sellingObj?.name,
-      getLooseValue(outputObj, 'selling_dealership_name', 'sellingdealershipname', 'selling_dealership', 'sellingdealership', 'seller', 'seller_name')
+      getLooseValue(
+        outputObj,
+        'selling_dealership_name',
+        'sellingdealershipname',
+        'selling_dealership',
+        'sellingdealership',
+        'seller',
+        'seller_name',
+        'seller_dealer',
+        'seller_dealer_name',
+        'from_dealer',
+        'from_dealer_name',
+        'from_dealership',
+        'from_dealership_name',
+        'origin_dealer',
+        'origin_dealer_name'
+      ),
+      getLooseValue(outputObj, 'pickup_location_name', 'pickuplocationname', 'pickup_name', 'pickupname'),
+      pickupObj?.name
     );
     const sellingPhone = pickFirstString(
       sellingObj?.phone,
-      getLooseValue(outputObj, 'selling_dealership_phone', 'sellingdealershipphone', 'seller_phone', 'sellerphone', 'selling_phone')
+      getLooseValue(
+        outputObj,
+        'selling_dealership_phone',
+        'sellingdealershipphone',
+        'seller_phone',
+        'sellerphone',
+        'selling_phone',
+        'from_dealer_phone',
+        'fromdealershipphone',
+        'origin_dealer_phone'
+      ),
+      getLooseValue(outputObj, 'pickup_location_phone', 'pickuplocationphone', 'pickup_phone', 'pickupphone'),
+      pickupObj?.phone
     );
     const sellingAddress = pickFirstString(
       sellingObj?.address,
-      getLooseValue(outputObj, 'selling_dealership_address', 'sellingdealershipaddress', 'seller_address', 'selleraddress'),
+      getLooseValue(
+        outputObj,
+        'selling_dealership_address',
+        'sellingdealershipaddress',
+        'seller_address',
+        'selleraddress',
+        'from_dealer_address',
+        'from_dealership_address',
+        'origin_dealer_address'
+      ),
+      getLooseValue(outputObj, 'pickup_location_address', 'pickuplocationaddress', 'pickup_address', 'pickupaddress'),
       pickupObj?.address
     );
 
     const buyingName = pickFirstString(
       buyingObj?.name,
-      getLooseValue(outputObj, 'buying_dealership_name', 'buyingdealershipname', 'buying_dealership', 'buyingdealership', 'buyer', 'buyer_name')
+      buyingObj2?.name,
+      buyerDealershipObj?.name,
+      buyerDealershipObj2?.name,
+      destinationDealershipObj?.name,
+      destinationDealershipObj2?.name,
+      toDealershipObj?.name,
+      toDealershipObj2?.name,
+      deliveryObj?.name,
+      deliveryObj2?.name,
+      destinationObj?.name,
+      dropoffObj?.name,
+      dropOffAltObj?.name,
+      dropoffAlt2Obj?.name,
+      getLooseValue(
+        outputObj,
+        'buying_dealership_name',
+        'buyingdealershipname',
+        'buying_dealership',
+        'buyingdealership',
+        'buyer_dealership_name',
+        'buyerdealershipname',
+        'buyer_dealership',
+        'buyerdealership',
+        'buyer',
+        'buyer_name',
+        'buyer_dealer',
+        'buyer_dealer_name',
+        'to_dealer',
+        'to_dealer_name',
+        'to_dealership',
+        'to_dealership_name',
+        'destination_dealer',
+        'destination_dealer_name',
+        'destination_dealership',
+        'destination_dealership_name',
+        'dealership_to',
+        'dealershipto',
+        'delivered_to',
+        'deliveredto',
+        'delivery_dealership',
+        'deliverydealership'
+      ),
+      getLooseValue(outputObj, 'dropoff_location_name', 'dropofflocationname', 'dropoff_name', 'dropoffname', 'delivery_location_name', 'deliverylocationname'),
+      dropoffObj?.name
     );
     const buyingPhone = pickFirstString(
       buyingObj?.phone,
-      getLooseValue(outputObj, 'buying_dealership_phone', 'buyingdealershipphone', 'buyer_phone', 'buyerphone')
+      buyingObj2?.phone,
+      buyerDealershipObj?.phone,
+      buyerDealershipObj2?.phone,
+      destinationDealershipObj?.phone,
+      destinationDealershipObj2?.phone,
+      toDealershipObj?.phone,
+      toDealershipObj2?.phone,
+      deliveryObj?.phone,
+      deliveryObj2?.phone,
+      destinationObj?.phone,
+      dropoffObj?.phone,
+      dropOffAltObj?.phone,
+      dropoffAlt2Obj?.phone,
+      getLooseValue(
+        outputObj,
+        'buying_dealership_phone',
+        'buyingdealershipphone',
+        'buyer_dealership_phone',
+        'buyerdealershipphone',
+        'buyer_phone',
+        'buyerphone',
+        'to_dealer_phone',
+        'destination_dealer_phone',
+        'destination_dealership_phone',
+        'dealership_to_phone',
+        'dealershiptophone',
+        'delivery_dealership_phone',
+        'deliverydealershipphone'
+      ),
+      getLooseValue(outputObj, 'dropoff_location_phone', 'dropofflocationphone', 'dropoff_phone', 'dropoffphone', 'delivery_location_phone', 'deliverylocationphone'),
+      dropoffObj?.phone
     );
     const buyingContactName = pickFirstString(
       buyingObj?.contact_name,
-      getLooseValue(outputObj, 'contact_name', 'contactname', 'buyer_contact_name', 'buyercontactname', 'buyer_contact')
+      buyingObj2?.contact_name,
+      buyerDealershipObj?.contact_name,
+      buyerDealershipObj2?.contact_name,
+      destinationDealershipObj?.contact_name,
+      destinationDealershipObj2?.contact_name,
+      toDealershipObj?.contact_name,
+      toDealershipObj2?.contact_name,
+      deliveryObj?.contact_name,
+      deliveryObj2?.contact_name,
+      destinationObj?.contact_name,
+      getLooseValue(outputObj, 'contact_name', 'contactname', 'buyer_contact_name', 'buyercontactname', 'buyer_contact'),
+      dropoffObj?.contact_name,
+      dropoffObj?.contact
     );
 
     const pickupName = pickFirstString(pickupObj?.name, getLooseValue(outputObj, 'pickup_location_name', 'pickuplocationname', 'pickup_name', 'pickupname'));
@@ -1108,6 +1587,103 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
 
     const releasedByName = pickFirstString(authObj?.released_by_name, getLooseValue(outputObj, 'released_by_name', 'releasedbyname', 'releasedby'));
     const releasedToName = pickFirstString(authObj?.released_to_name, getLooseValue(outputObj, 'released_to_name', 'releasedtoname', 'releasedto'));
+
+    const pickupAddressForParsing = pickBestAddressCandidate(
+      pickupObj?.full_address,
+      pickupObj?.fullAddress,
+      pickupAddress,
+      sellingAddress
+    );
+    const parsedPickup = parseAddressToBreakdown(pickupAddressForParsing);
+    const dropoffAddressForParsing = pickBestAddressCandidate(
+      dropoffObj?.full_address,
+      dropoffObj?.fullAddress,
+      dropOffAltObj?.full_address,
+      dropOffAltObj?.fullAddress,
+      dropoffAddress
+    );
+    const parsedDropoff = parseAddressToBreakdown(dropoffAddressForParsing);
+
+    const pickupCity = pickFirstString(pickupObj?.city, getLooseValue(outputObj, 'pickup_city', 'pickupCity'));
+    const pickupProvince = pickFirstString(pickupObj?.province, pickupObj?.state, getLooseValue(outputObj, 'pickup_province', 'pickupProvince', 'pickup_state', 'pickupState'));
+    const pickupPostal = pickFirstString(pickupObj?.postal_code, pickupObj?.postal, pickupObj?.zip, getLooseValue(outputObj, 'pickup_postal_code', 'pickupPostalCode', 'pickup_postal', 'pickupPostal'));
+    const pickupCountry = pickFirstString(pickupObj?.country, getLooseValue(outputObj, 'pickup_country', 'pickupCountry'));
+
+    const dropoffProvince = pickFirstString(dropoffObj?.province, dropoffObj?.state, dropOffAltObj?.province, dropOffAltObj?.state, getLooseValue(outputObj, 'dropoff_province', 'dropoffProvince', 'dropoff_state', 'dropoffState'));
+    const dropoffPostal = pickFirstString(dropoffObj?.postal_code, dropoffObj?.postal, dropoffObj?.zip, dropOffAltObj?.postal_code, dropOffAltObj?.postal, dropOffAltObj?.zip, getLooseValue(outputObj, 'dropoff_postal_code', 'dropoffPostalCode', 'dropoff_postal', 'dropoffPostal'));
+    const dropoffCountry = pickFirstString(dropoffObj?.country, dropOffAltObj?.country, getLooseValue(outputObj, 'dropoff_country', 'dropoffCountry'));
+
+    const pickupNumber = pickFirstString(
+      parsedPickup.number,
+      pickupObj?.number,
+      pickupObj?.street_number,
+      getLooseValue(outputObj, 'pickup_number', 'pickupNumber')
+    );
+    const pickupStreet = pickFirstString(
+      pickupObj?.street,
+      pickupObj?.street_name,
+      getLooseValue(outputObj, 'pickup_street', 'pickupStreet')
+    );
+    const pickupStreetFinal = pickupNumber ? pickFirstString(parsedPickup.street, pickupStreet) : pickupStreet;
+    const pickupCityFinalRaw = pickFirstString(parsedPickup.city, pickupCity);
+    const pickupPostalFinalRaw = normalizePostalCode(pickFirstString(parsedPickup.postal_code, pickupPostal));
+    const pickupCountryFinalRaw = pickFirstString(parsedPickup.country, pickupCountry);
+    const pickupProvPostalFromCity = extractProvincePostalFromLine(pickupCityFinalRaw);
+    const pickupProvinceFinalRaw = pickFirstString(parsedPickup.province, pickupProvince, pickupProvPostalFromCity.province);
+    const pickupPostalFinal = normalizePostalCode(pickFirstString(pickupPostalFinalRaw, pickupProvPostalFromCity.postal_code));
+    const pickupCityFinal = pickupProvPostalFromCity.postal_code ? normalizeWhitespace(pickupProvPostalFromCity.remainder || parsedPickup.city) : normalizeWhitespace(pickupCityFinalRaw);
+    const pickupCountryNormalized = normalizeProvinceCountry(pickupProvinceFinalRaw, pickupCountryFinalRaw);
+    const pickupProvinceFinal = pickupCountryNormalized.province;
+    const pickupCountryFinal = pickupCountryNormalized.country;
+    const pickupAddressCandidate = String(pickupAddress ?? '').trim();
+    const pickupAddressFinal =
+      (looksLikeStreetAddress(pickupAddressCandidate) ? pickupAddressCandidate : '') ||
+      buildAddressFromBreakdown({
+        street: pickupStreetFinal,
+        number: pickupNumber,
+        city: pickupCityFinal,
+        province: pickupProvinceFinal,
+        postal_code: pickupPostalFinal,
+        country: pickupCountryFinal,
+      });
+
+    const dropoffNumber = pickFirstString(
+      parsedDropoff.number,
+      dropoffObj?.number,
+      dropoffObj?.street_number,
+      dropOffAltObj?.number,
+      dropOffAltObj?.street_number,
+      getLooseValue(outputObj, 'dropoff_number', 'dropoffNumber')
+    );
+    const dropoffStreet = pickFirstString(
+      dropoffObj?.street,
+      dropoffObj?.street_name,
+      dropOffAltObj?.street,
+      dropOffAltObj?.street_name,
+      getLooseValue(outputObj, 'dropoff_street', 'dropoffStreet')
+    );
+    const dropoffStreetFinal = dropoffNumber ? pickFirstString(parsedDropoff.street, dropoffStreet) : dropoffStreet;
+    const dropoffCityFinalRaw = pickFirstString(parsedDropoff.city, extractedDropoffCity);
+    const dropoffPostalFinalRaw = normalizePostalCode(pickFirstString(parsedDropoff.postal_code, dropoffPostal));
+    const dropoffCountryFinalRaw = pickFirstString(parsedDropoff.country, dropoffCountry);
+    const dropoffProvPostalFromCity = extractProvincePostalFromLine(dropoffCityFinalRaw);
+    const dropoffProvinceFinalRaw = pickFirstString(parsedDropoff.province, dropoffProvince, dropoffProvPostalFromCity.province);
+    const dropoffPostalFinal = normalizePostalCode(pickFirstString(dropoffPostalFinalRaw, dropoffProvPostalFromCity.postal_code));
+    const dropoffCityFinal = dropoffProvPostalFromCity.postal_code ? normalizeWhitespace(dropoffProvPostalFromCity.remainder || parsedDropoff.city) : normalizeWhitespace(dropoffCityFinalRaw);
+    const dropoffCountryNormalized = normalizeProvinceCountry(dropoffProvinceFinalRaw, dropoffCountryFinalRaw);
+    const dropoffProvinceFinal = dropoffCountryNormalized.province;
+    const dropoffCountryFinal = dropoffCountryNormalized.country;
+    const dropoffAddressCandidate = String(dropoffAddress ?? '').trim();
+    const dropoffAddressFinal =
+      (looksLikeStreetAddress(dropoffAddressCandidate) ? dropoffAddressCandidate : '') ||
+      buildAddressFromBreakdown({
+        street: dropoffStreetFinal,
+        number: dropoffNumber,
+        city: dropoffCityFinal,
+        province: dropoffProvinceFinal,
+        postal_code: dropoffPostalFinal,
+        country: dropoffCountryFinal,
+      });
 
     return {
       service: {
@@ -1135,13 +1711,25 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       },
       pickup_location: {
         name: String(pickupName ?? ''),
-        address: String(pickupAddress ?? ''),
+        address: pickupAddressFinal,
+        street: pickupStreetFinal,
+        number: pickupNumber,
+        city: pickupCityFinal,
+        province: pickupProvinceFinal,
+        postal_code: pickupPostalFinal,
+        country: pickupCountryFinal,
         phone: String(pickupPhone ?? ''),
       },
       dropoff_location: {
         name: dropoffName,
         phone: dropoffPhone,
-        address: dropoffAddress,
+        address: dropoffAddressFinal,
+        street: dropoffStreetFinal,
+        number: dropoffNumber,
+        city: dropoffCityFinal,
+        province: dropoffProvinceFinal,
+        postal_code: dropoffPostalFinal,
+        country: dropoffCountryFinal,
         lat: dropoffLat,
         lng: dropoffLng,
         service_area: inferredServiceArea,
@@ -1169,8 +1757,8 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       vehicle: {},
       selling_dealership: {},
       buying_dealership: {},
-      pickup_location: {},
-      dropoff_location: { lat: '', lng: '', service_area: '' },
+      pickup_location: { ...emptyAddressBreakdown() },
+      dropoff_location: { ...emptyAddressBreakdown(), lat: '', lng: '', service_area: '' },
       transaction: {},
       authorization: {},
       dealer_notes: '',
@@ -1197,7 +1785,13 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
             </div>
             <div>
               <label className="block text-sm text-gray-600 mb-1">Year</label>
-              <input value={formData.vehicle.year} onChange={(e) => updateFormField('vehicle', 'year', e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+              <input
+                value={formData.vehicle.year}
+                onChange={(e) => updateFormField('vehicle', 'year', sanitizeDigits(e.target.value).slice(0, 4))}
+                inputMode="numeric"
+                pattern="[0-9]*"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+              />
             </div>
             <div>
               <label className="block text-sm text-gray-600 mb-1">Make</label>
@@ -1209,15 +1803,29 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
             </div>
             <div>
               <label className="block text-sm text-gray-600 mb-1">Transmission</label>
-              <input value={formData.vehicle.transmission} onChange={(e) => updateFormField('vehicle', 'transmission', e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+              <input
+                value={formData.vehicle.transmission}
+                onChange={(e) => updateFormField('vehicle', 'transmission', sanitizeNoDigits(e.target.value))}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+              />
             </div>
             <div>
               <label className="block text-sm text-gray-600 mb-1">Odometer (km)</label>
-              <input value={formData.vehicle.odometer_km} onChange={(e) => updateFormField('vehicle', 'odometer_km', e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+              <input
+                value={formData.vehicle.odometer_km}
+                onChange={(e) => updateFormField('vehicle', 'odometer_km', sanitizeDigits(e.target.value))}
+                inputMode="numeric"
+                pattern="[0-9]*"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+              />
             </div>
             <div>
               <label className="block text-sm text-gray-600 mb-1">Exterior Color</label>
-              <input value={formData.vehicle.exterior_color} onChange={(e) => updateFormField('vehicle', 'exterior_color', e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+              <input
+                value={formData.vehicle.exterior_color}
+                onChange={(e) => updateFormField('vehicle', 'exterior_color', sanitizeNoDigits(e.target.value))}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+              />
             </div>
           </div>
         </div>
@@ -1231,7 +1839,12 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
             </div>
             <div>
               <label className="block text-sm text-gray-600 mb-1">Phone</label>
-              <input value={formData.selling_dealership.phone} onChange={(e) => updateFormField('selling_dealership', 'phone', e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+              <input
+                value={formData.selling_dealership.phone}
+                onChange={(e) => updateFormField('selling_dealership', 'phone', sanitizePhone(e.target.value))}
+                inputMode="tel"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+              />
             </div>
             <div>
               <label className="block text-sm text-gray-600 mb-1">Address</label>
@@ -1249,11 +1862,20 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
             </div>
             <div>
               <label className="block text-sm text-gray-600 mb-1">Phone</label>
-              <input value={formData.buying_dealership.phone} onChange={(e) => updateFormField('buying_dealership', 'phone', e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+              <input
+                value={formData.buying_dealership.phone}
+                onChange={(e) => updateFormField('buying_dealership', 'phone', sanitizePhone(e.target.value))}
+                inputMode="tel"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+              />
             </div>
             <div>
               <label className="block text-sm text-gray-600 mb-1">Contact Name</label>
-              <input value={formData.buying_dealership.contact_name} onChange={(e) => updateFormField('buying_dealership', 'contact_name', e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+              <input
+                value={formData.buying_dealership.contact_name}
+                onChange={(e) => updateFormField('buying_dealership', 'contact_name', sanitizeNoDigits(e.target.value))}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+              />
             </div>
           </div>
         </div>
@@ -1285,18 +1907,79 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
 
         <div className="mb-6">
           <h5 className="text-sm font-semibold text-gray-700 mb-3">Pickup Location</h5>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm text-gray-600 mb-1">Name</label>
               <input value={formData.pickup_location.name} onChange={(e) => updateFormField('pickup_location', 'name', e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
             </div>
             <div>
               <label className="block text-sm text-gray-600 mb-1">Phone</label>
-              <input value={formData.pickup_location.phone} onChange={(e) => updateFormField('pickup_location', 'phone', e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+              <input
+                value={formData.pickup_location.phone}
+                onChange={(e) => updateFormField('pickup_location', 'phone', sanitizePhone(e.target.value))}
+                inputMode="tel"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+              />
             </div>
-            <div>
-              <label className="block text-sm text-gray-600 mb-1">Address</label>
-              <input value={formData.pickup_location.address} onChange={(e) => updateFormField('pickup_location', 'address', e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+          </div>
+
+          <div className="mt-4 rounded-lg border border-gray-200 bg-white p-4">
+            <div className="text-sm font-semibold text-gray-700 mb-3">Address Breakdown</div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">Street</label>
+                <input
+                  value={String(formData.pickup_location.street ?? '')}
+                  onChange={(e) => setPickupAddressFromBreakdown({ street: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                  placeholder="10e Avenue (10th Avenue)"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">Number</label>
+                <input
+                  value={String(formData.pickup_location.number ?? '')}
+                  onChange={(e) => setPickupAddressFromBreakdown({ number: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                  placeholder="8670"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">City</label>
+                <input
+                  value={String(formData.pickup_location.city ?? '')}
+                  onChange={(e) => setPickupAddressFromBreakdown({ city: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                  placeholder="Montréal"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">Province</label>
+                <input
+                  value={String(formData.pickup_location.province ?? '')}
+                  onChange={(e) => setPickupAddressFromBreakdown({ province: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                  placeholder="Quebec (QC)"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">Postal Code</label>
+                <input
+                  value={String(formData.pickup_location.postal_code ?? '')}
+                  onChange={(e) => setPickupAddressFromBreakdown({ postal_code: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                  placeholder="H1Z 3B8"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">Country</label>
+                <input
+                  value={String(formData.pickup_location.country ?? 'Canada')}
+                  onChange={(e) => setPickupAddressFromBreakdown({ country: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                  placeholder="Canada"
+                />
+              </div>
             </div>
           </div>
         </div>
@@ -1310,7 +1993,12 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
             </div>
             <div>
               <label className="block text-sm text-gray-600 mb-1">Phone</label>
-              <input value={String(formData?.dropoff_location?.phone ?? '')} onChange={(e) => updateFormField('dropoff_location', 'phone', e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+              <input
+                value={String(formData?.dropoff_location?.phone ?? '')}
+                onChange={(e) => updateFormField('dropoff_location', 'phone', sanitizePhone(e.target.value))}
+                inputMode="tel"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+              />
             </div>
             <div>
               <label className="block text-sm text-gray-600 mb-1">Route / Service Area</label>
@@ -1328,14 +2016,65 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
                 ))}
               </select>
             </div>
-            <div>
-              <label className="block text-sm text-gray-600 mb-1">Address</label>
-              <input
-                value={String(formData?.dropoff_location?.address ?? '')}
-                onChange={(e) => updateFormField('dropoff_location', 'address', e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                placeholder="Optional: type address to auto-pin on the map"
-              />
+          </div>
+
+          <div className="mt-4 rounded-lg border border-gray-200 bg-white p-4">
+            <div className="text-sm font-semibold text-gray-700 mb-3">Address Breakdown</div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">Street</label>
+                <input
+                  value={String(formData.dropoff_location.street ?? '')}
+                  onChange={(e) => setDropoffAddressFromBreakdown({ street: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                  placeholder="10e Avenue (10th Avenue)"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">Number</label>
+                <input
+                  value={String(formData.dropoff_location.number ?? '')}
+                  onChange={(e) => setDropoffAddressFromBreakdown({ number: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                  placeholder="8670"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">City</label>
+                <input
+                  value={String(formData.dropoff_location.city ?? '')}
+                  onChange={(e) => setDropoffAddressFromBreakdown({ city: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                  placeholder="Montréal"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">Province</label>
+                <input
+                  value={String(formData.dropoff_location.province ?? '')}
+                  onChange={(e) => setDropoffAddressFromBreakdown({ province: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                  placeholder="Quebec (QC)"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">Postal Code</label>
+                <input
+                  value={String(formData.dropoff_location.postal_code ?? '')}
+                  onChange={(e) => setDropoffAddressFromBreakdown({ postal_code: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                  placeholder="H1Z 3B8"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">Country</label>
+                <input
+                  value={String(formData.dropoff_location.country ?? 'Canada')}
+                  onChange={(e) => setDropoffAddressFromBreakdown({ country: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                  placeholder="Canada"
+                />
+              </div>
             </div>
           </div>
 
@@ -1366,7 +2105,13 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm text-gray-600 mb-1">Transaction ID</label>
-              <input value={formData.transaction.transaction_id} onChange={(e) => updateFormField('transaction', 'transaction_id', e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+              <input
+                value={formData.transaction.transaction_id}
+                onChange={(e) => updateFormField('transaction', 'transaction_id', sanitizeDigitsDash(e.target.value))}
+                inputMode="numeric"
+                pattern="[0-9-]*"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+              />
             </div>
             <div>
               <label className="block text-sm text-gray-600 mb-1">Release Form #</label>
@@ -1374,11 +2119,21 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
             </div>
             <div>
               <label className="block text-sm text-gray-600 mb-1">Release Date</label>
-              <input value={formData.transaction.release_date} onChange={(e) => updateFormField('transaction', 'release_date', e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+              <input
+                value={formData.transaction.release_date}
+                onChange={(e) => updateFormField('transaction', 'release_date', sanitizeDateLike(e.target.value))}
+                inputMode="numeric"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+              />
             </div>
             <div>
               <label className="block text-sm text-gray-600 mb-1">Arrival Date</label>
-              <input value={formData.transaction.arrival_date} onChange={(e) => updateFormField('transaction', 'arrival_date', e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+              <input
+                value={formData.transaction.arrival_date}
+                onChange={(e) => updateFormField('transaction', 'arrival_date', sanitizeDateLike(e.target.value))}
+                inputMode="numeric"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+              />
             </div>
           </div>
         </div>
@@ -1388,11 +2143,19 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm text-gray-600 mb-1">Released By Name</label>
-              <input value={formData.authorization.released_by_name} onChange={(e) => updateFormField('authorization', 'released_by_name', e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+              <input
+                value={formData.authorization.released_by_name}
+                onChange={(e) => updateFormField('authorization', 'released_by_name', sanitizeLettersSpaces(e.target.value))}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+              />
             </div>
             <div>
               <label className="block text-sm text-gray-600 mb-1">Released To Name</label>
-              <input value={formData.authorization.released_to_name} onChange={(e) => updateFormField('authorization', 'released_to_name', e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+              <input
+                value={formData.authorization.released_to_name}
+                onChange={(e) => updateFormField('authorization', 'released_to_name', sanitizeLettersSpaces(e.target.value))}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+              />
             </div>
           </div>
         </div>
@@ -1422,6 +2185,69 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
         [section]: {
           ...((prev[section] as unknown as Record<string, unknown>) ?? {}),
           [key]: value,
+        },
+      } as FormData;
+    });
+  };
+
+  const setPickupAddressFromBreakdown = (next: Partial<AddressBreakdown>) => {
+    setFormData((prev) => {
+      if (!prev) return prev;
+      const current = prev.pickup_location;
+      const merged: AddressBreakdown = {
+        street: String(next.street ?? current.street ?? ''),
+        number: String(next.number ?? current.number ?? ''),
+        city: String(next.city ?? current.city ?? ''),
+        province: String(next.province ?? current.province ?? ''),
+        postal_code: normalizePostalCode(String(next.postal_code ?? current.postal_code ?? '')),
+        country: String(next.country ?? current.country ?? 'Canada'),
+      };
+      const addr = buildAddressFromBreakdown(merged);
+      return {
+        ...prev,
+        pickup_location: {
+          ...prev.pickup_location,
+          ...merged,
+          address: addr,
+        },
+      } as FormData;
+    });
+  };
+
+  const setDropoffAddressFromBreakdown = (next: Partial<AddressBreakdown>) => {
+    setFormData((prev) => {
+      if (!prev) return prev;
+      const current = prev.dropoff_location;
+      const merged: AddressBreakdown = {
+        street: String(next.street ?? current.street ?? ''),
+        number: String(next.number ?? current.number ?? ''),
+        city: String(next.city ?? current.city ?? ''),
+        province: String(next.province ?? current.province ?? ''),
+        postal_code: normalizePostalCode(String(next.postal_code ?? current.postal_code ?? '')),
+        country: String(next.country ?? current.country ?? 'Canada'),
+      };
+      const addr = buildAddressFromBreakdown(merged);
+      return {
+        ...prev,
+        dropoff_location: {
+          ...prev.dropoff_location,
+          ...merged,
+          address: addr,
+        },
+      } as FormData;
+    });
+  };
+
+  const handleDropoffAddressChange = (value: string) => {
+    const parsed = parseAddressToBreakdown(value);
+    setFormData((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        dropoff_location: {
+          ...prev.dropoff_location,
+          address: value,
+          ...parsed,
         },
       } as FormData;
     });
@@ -1509,14 +2335,6 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
     setUploadedFiles((prev) => [...mapped, ...prev]);
   };
 
-  const formatFileSize = (bytes: number): string => {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
-  };
-
   const removeFile = (id: string) => {
     setUploadedFiles((prev) => prev.filter((file) => file.id !== id));
   };
@@ -1545,10 +2363,43 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
     }, 0);
   };
 
+  const closeDropoffValidationModal = () => {
+    setIsDropoffValidationOpen(false);
+  };
+
   const handleSubmitDocuments = async () => {
     if (isSubmitting) return;
 
     if (formData) {
+      const dropoffStreet = String(formData.dropoff_location.street ?? '').trim();
+      const dropoffNumber = String(formData.dropoff_location.number ?? '').trim();
+      const dropoffCity = String(formData.dropoff_location.city ?? '').trim();
+      const dropoffProvince = String(formData.dropoff_location.province ?? '').trim();
+      const dropoffPostal = String(formData.dropoff_location.postal_code ?? '').trim();
+      const dropoffCountry = String(formData.dropoff_location.country ?? '').trim();
+
+      const missingFields: string[] = [];
+      if (!dropoffStreet) missingFields.push('Street');
+      if (!dropoffNumber) missingFields.push('Number');
+      if (!dropoffCity) missingFields.push('City');
+      if (!dropoffProvince) missingFields.push('Province');
+      if (!dropoffPostal) missingFields.push('Postal Code');
+      if (!dropoffCountry) missingFields.push('Country');
+
+      const isDropoffBreakdownComplete =
+        !!dropoffStreet &&
+        !!dropoffNumber &&
+        !!dropoffCity &&
+        !!dropoffProvince &&
+        !!dropoffPostal &&
+        !!dropoffCountry;
+
+      if (!isDropoffBreakdownComplete) {
+        setDropoffValidationMissingFields(missingFields);
+        setIsDropoffValidationOpen(true);
+        return;
+      }
+
       setShowCostEstimate(false);
 
       const pickupLat = Number(dealershipCoords?.lat);
@@ -1853,14 +2704,16 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
     setSubmitError(false);
 
     try {
-      const files = await Promise.all(
+      const filesWithBase64 = await Promise.all(
         uploadedFiles.map(async (f) => ({
           name: f.name,
           type: f.type,
           size: f.file.size,
           base64: await fileToBase64(f.file),
+          docType: f.docType,
         }))
       );
+      const files = filesWithBase64.map((f) => ({ name: f.name, type: f.type, size: f.size, base64: f.base64 }));
 
       const res = await fetch('https://primary-production-6722.up.railway.app/webhook/upload', {
         method: 'POST',
@@ -1915,6 +2768,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
     if (!isLoggedIn) {
       setSubmitMessage('Please log in with Google to continue.');
       setSubmitError(true);
+      await saveDraftBeforeSignIn();
       onContinueToSignIn?.();
       return;
     }
@@ -1935,6 +2789,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
     if (!isLoggedIn) {
       setSubmitMessage('Please log in with Google to continue.');
       setSubmitError(true);
+      await saveDraftBeforeSignIn();
       onContinueToSignIn?.();
       return;
     }
@@ -1960,14 +2815,16 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
         }
       })();
 
-      const files = await Promise.all(
+      const filesWithBase64 = await Promise.all(
         uploadedFiles.map(async (f) => ({
           name: f.name,
           type: f.type,
           size: f.file.size,
           base64: await fileToBase64(f.file),
+          docType: f.docType,
         }))
       );
+      const files = filesWithBase64.map((f) => ({ name: f.name, type: f.type, size: f.size, base64: f.base64 }));
 
       let responseText: string | null = null;
       try {
@@ -2130,6 +2987,17 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       const token = await getAccessToken();
       if (!token) throw new Error('Not authenticated');
 
+      const uploadRes = await fetch('/.netlify/functions/upload-order-documents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_code: orderCode, access_token: token, files: filesWithBase64 }),
+      });
+
+      if (!uploadRes.ok) {
+        const text = await uploadRes.text().catch(() => '');
+        throw new Error(text || 'Failed to save uploaded documents');
+      }
+
       const res = await fetch('/.netlify/functions/create-checkout-session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2184,6 +3052,51 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
                   className="inline-flex justify-center rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-gray-800 transition-colors"
                 >
                   Back
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isDropoffValidationOpen && (
+        <div
+          className="fixed inset-0 z-[10004] flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) closeDropoffValidationModal();
+          }}
+        >
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm"></div>
+          <div className="relative w-full max-w-md rounded-2xl bg-white shadow-2xl border border-gray-200 overflow-hidden">
+            <div className="px-6 py-5 border-b border-gray-100">
+              <div className="text-base font-semibold text-gray-900">Drop-off location required</div>
+              <div className="mt-1 text-sm text-gray-600">
+                Please fill in the required Drop-off Address Breakdown fields before continuing.
+              </div>
+            </div>
+            <div className="px-6 py-5">
+              {dropoffValidationMissingFields.length > 0 && (
+                <div className="text-sm text-gray-800">
+                  Missing:
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {dropoffValidationMissingFields.map((f) => (
+                      <span key={f} className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-800 border border-gray-200">
+                        {f}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="mt-5 flex justify-end">
+                <button
+                  type="button"
+                  onClick={closeDropoffValidationModal}
+                  className="inline-flex justify-center rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-gray-800 transition-colors"
+                >
+                  OK
                 </button>
               </div>
             </div>
@@ -2540,7 +3453,9 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
                     <button
                       onClick={() => {
                         setShowCostEstimate(false);
-                        onContinueToSignIn?.();
+                        void saveDraftBeforeSignIn().then(() => {
+                          onContinueToSignIn?.();
+                        });
                       }}
                       className="w-full bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors font-semibold"
                     >
@@ -2803,15 +3718,30 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
                         const v = e.target.value as UploadedFile['docType'];
                         setUploadedFiles((prev) => prev.map((x) => (x.id === file.id ? { ...x, docType: v } : x)));
                       }}
-                      className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
+                      className="rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm"
+                      style={{ color: '#111827', backgroundColor: '#ffffff' }}
                     >
-                      <option value="unknown">Select document type</option>
-                      <option value="release_form">Vehicle Release Form (required)</option>
-                      <option value="work_order">Work Order (required)</option>
-                      <option value="bill_of_sale">Bill of Sale (optional)</option>
-                      <option value="photo">Photos (optional)</option>
-                      <option value="notes">Notes (optional)</option>
-                      <option value="other">Other (optional)</option>
+                      <option value="unknown" className="bg-white text-gray-900" style={{ color: '#111827', backgroundColor: '#ffffff' }}>
+                        Select document type
+                      </option>
+                      <option value="release_form" className="bg-white text-gray-900" style={{ color: '#111827', backgroundColor: '#ffffff' }}>
+                        Vehicle Release Form (required)
+                      </option>
+                      <option value="work_order" className="bg-white text-gray-900" style={{ color: '#111827', backgroundColor: '#ffffff' }}>
+                        Work Order (required)
+                      </option>
+                      <option value="bill_of_sale" className="bg-white text-gray-900" style={{ color: '#111827', backgroundColor: '#ffffff' }}>
+                        Bill of Sale (optional)
+                      </option>
+                      <option value="photo" className="bg-white text-gray-900" style={{ color: '#111827', backgroundColor: '#ffffff' }}>
+                        Photos (optional)
+                      </option>
+                      <option value="notes" className="bg-white text-gray-900" style={{ color: '#111827', backgroundColor: '#ffffff' }}>
+                        Notes (optional)
+                      </option>
+                      <option value="other" className="bg-white text-gray-900" style={{ color: '#111827', backgroundColor: '#ffffff' }}>
+                        Other (optional)
+                      </option>
                     </select>
                     {file.docType === 'release_form' || file.docType === 'work_order' ? (
                       <div className="inline-flex items-center gap-2 rounded-full bg-green-50 border border-green-200 px-3 py-1 text-xs font-semibold text-green-700">

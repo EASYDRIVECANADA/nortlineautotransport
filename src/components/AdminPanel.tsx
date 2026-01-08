@@ -115,6 +115,16 @@ export default function AdminPanel({ onBack, embedded = false, role = 'admin' }:
   const [note, setNote] = useState('');
   const [actionError, setActionError] = useState<string | null>(null);
 
+  const getStaffAccessToken = useCallback(async (): Promise<string | null> => {
+    if (!supabase) return null;
+    try {
+      const { data } = await supabase.auth.getSession();
+      return data?.session?.access_token ?? null;
+    } catch {
+      return null;
+    }
+  }, []);
+
   const reload = useCallback(() => {
     if (isLocalDev) {
       try {
@@ -147,6 +157,13 @@ export default function AdminPanel({ onBack, embedded = false, role = 'admin' }:
                   mime: String(d?.mime ?? ''),
                   size: Number(d?.size ?? 0),
                   kind: (String(d?.kind ?? 'unknown') as 'required' | 'optional' | 'unknown') || 'unknown',
+                  storage:
+                    d?.storage && typeof d.storage === 'object'
+                      ? {
+                          bucket: String((d.storage as Record<string, unknown>)?.bucket ?? ''),
+                          path: String((d.storage as Record<string, unknown>)?.path ?? ''),
+                        }
+                      : undefined,
                 }))
             : [];
 
@@ -174,6 +191,44 @@ export default function AdminPanel({ onBack, embedded = false, role = 'admin' }:
         setOrders([]);
       });
   }, [isLocalDev]);
+
+  const openStoredDocument = useCallback(
+    async (docId: string) => {
+      if (isLocalDev) return;
+      if (!supabase) return;
+      const id = String(selectedId ?? '').trim();
+      if (!id) return;
+      const order = orders.find((o) => o.id === id) as AdminOrder | undefined;
+      const dbId = String(order?.db_id ?? '').trim();
+      if (!dbId) return;
+
+      const token = await getStaffAccessToken();
+      if (!token) {
+        setActionError('Not authenticated');
+        return;
+      }
+
+      setActionError(null);
+      try {
+        const res = await fetch('/.netlify/functions/get-order-document-url', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ access_token: token, order_id: dbId, doc_id: docId }),
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          throw new Error(text || 'Failed to load document');
+        }
+        const json = (await res.json().catch(() => null)) as { url?: unknown } | null;
+        const url = String(json?.url ?? '').trim();
+        if (!url) throw new Error('Missing document URL');
+        window.open(url, '_blank', 'noopener,noreferrer');
+      } catch (e) {
+        setActionError(e instanceof Error ? e.message : 'Failed to open document');
+      }
+    },
+    [getStaffAccessToken, isLocalDev, orders, selectedId]
+  );
 
   useEffect(() => {
     reload();
@@ -765,7 +820,21 @@ export default function AdminPanel({ onBack, embedded = false, role = 'admin' }:
                                 <div className="text-sm font-semibold text-gray-900 truncate">{d.name}</div>
                                 <div className="text-xs text-gray-600 truncate">{d.mime}</div>
                               </div>
-                              <div className="text-xs font-semibold text-gray-700">{d.kind}</div>
+                              <div className="flex items-center gap-3">
+                                {!isLocalDev && d.storage?.bucket && d.storage?.path ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      void openStoredDocument(d.id);
+                                    }}
+                                    className="inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-gray-800 hover:bg-gray-50 transition-colors"
+                                  >
+                                    <Download className="h-4 w-4" />
+                                    View
+                                  </button>
+                                ) : null}
+                                <div className="text-xs font-semibold text-gray-700">{d.kind}</div>
+                              </div>
                             </div>
                           ))}
                         </div>
