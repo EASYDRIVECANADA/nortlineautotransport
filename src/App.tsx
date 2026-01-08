@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import HomePage from './components/HomePage';
 import Dashboard from './components/Dashboard';
 import AdminPortal from './components/AdminPortal';
+import ChatBot from './components/ChatBot';
 import { supabase } from './lib/supabaseClient';
 
 const STORAGE_RECEIPTS_PENDING = 'ed_receipts_pending';
@@ -241,6 +242,7 @@ function App() {
       ) : (
         <Dashboard onLogout={handleLogout} />
       )}
+      <ChatBot />
     </>
   );
 }
