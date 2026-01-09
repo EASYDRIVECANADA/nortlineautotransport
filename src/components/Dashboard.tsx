@@ -347,12 +347,12 @@ export default function Dashboard({ onLogout }: DashboardProps) {
       {isAccountMenuOpen && (
         <div
           className="fixed inset-0 z-40"
-          onMouseDown={() => {
+          onPointerDown={() => {
             setIsAccountMenuOpen(false);
           }}
         />
       )}
-      <nav className="bg-white shadow-sm border-b border-gray-200 sticky top-0 z-40">
+      <nav className="bg-white shadow-sm border-b border-gray-200 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16">
             <div className="flex items-center space-x-2">
@@ -362,7 +362,7 @@ export default function Dashboard({ onLogout }: DashboardProps) {
                 className="h-9 w-auto"
               />
             </div>
-            <div className="flex items-center gap-1 sm:gap-2 md:gap-4 overflow-x-auto whitespace-nowrap">
+            <div className="flex items-center gap-1 sm:gap-2 md:gap-4 overflow-x-auto sm:overflow-visible whitespace-nowrap touch-pan-x">
               <button
                 type="button"
                 onClick={() => {
@@ -427,7 +427,7 @@ export default function Dashboard({ onLogout }: DashboardProps) {
                 <button
                   type="button"
                   onClick={() => setIsAccountMenuOpen((v) => !v)}
-                  className="flex items-center gap-2 px-2 sm:px-3 py-2 rounded-lg text-gray-600 hover:text-cyan-500 hover:bg-cyan-50 transition-all"
+                  className="flex items-center gap-2 px-2 sm:px-3 py-2 rounded-lg text-gray-600 hover:text-cyan-500 hover:bg-cyan-50 transition-all shrink-0"
                   aria-haspopup="menu"
                   aria-expanded={isAccountMenuOpen}
                 >
@@ -449,8 +449,8 @@ export default function Dashboard({ onLogout }: DashboardProps) {
                 {isAccountMenuOpen && (
                   <div
                     role="menu"
-                    className="absolute right-0 mt-2 w-72 rounded-xl border border-gray-200 bg-white shadow-lg overflow-hidden z-50"
-                    onMouseDown={(e) => {
+                    className="fixed sm:absolute right-4 sm:right-0 top-16 sm:top-full mt-2 w-[calc(100vw-2rem)] sm:w-72 rounded-xl border border-gray-200 bg-white shadow-lg overflow-hidden z-50"
+                    onPointerDown={(e) => {
                       e.stopPropagation();
                     }}
                   >

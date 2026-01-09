@@ -22,7 +22,7 @@ export default function ChatBot() {
   ]);
   const [inputValue, setInputValue] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const webhookUrl = (import.meta as any).env?.VITE_CHAT_WEBHOOK || '/api/chatbot';
+  const webhookUrl = import.meta.env?.VITE_CHAT_WEBHOOK || '/api/chatbot';
   const [isBotTyping, setIsBotTyping] = useState(false);
   const sessionIdRef = useRef<string>(
     `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
@@ -71,12 +71,12 @@ export default function ChatBot() {
       // ignore
     }
 
-    const bulletRegex = /(?:^|[\n\r])\s*[\-•–]\s+/g;
+    const bulletRegex = /(?:^|[\n\r])\s*[-•–]\s+/g;
     const matches = text.match(bulletRegex);
     if (matches && matches.length >= 3) {
       const items = text
-        .replace(/^[\s\S]*?(?:\-|•|–)\s+/, '')
-        .split(/\n\s*(?:\-|•|–)\s+|\s+\-\s+/)
+        .replace(/^[\s\S]*?(?:-|•|–)\s+/, '')
+        .split(/\n\s*(?:-|•|–)\s+|\s+-\s+/)
         .map((s) => s.trim())
         .filter(Boolean);
       return (
