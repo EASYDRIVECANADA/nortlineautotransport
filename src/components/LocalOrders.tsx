@@ -257,12 +257,12 @@ export default function LocalOrders({ onBack, embed = false }: LocalOrdersProps)
             <div className="rounded-2xl bg-white border border-gray-200 shadow-sm overflow-hidden">
               <div className="p-4 border-b border-gray-100">
                 <div className="text-sm font-semibold text-gray-900">Find an order</div>
-                <div className="mt-3 flex gap-2">
+                <div className="mt-3 flex flex-col sm:flex-row gap-2">
                   <input
                     value={searchId}
                     onChange={(e) => setSearchId(e.target.value)}
                     placeholder="Enter Order ID (e.g. EDC-YYYYMMDD-XXXXXX)"
-                    className="flex-1 rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm"
+                    className="w-full sm:flex-1 rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm"
                   />
                   <button
                     type="button"
@@ -270,7 +270,7 @@ export default function LocalOrders({ onBack, embed = false }: LocalOrdersProps)
                       const found = searched;
                       if (found) openOrder(found.id);
                     }}
-                    className="rounded-xl bg-gray-900 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-800 transition-colors"
+                    className="w-full sm:w-auto rounded-xl bg-gray-900 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-800 transition-colors"
                   >
                     Open
                   </button>

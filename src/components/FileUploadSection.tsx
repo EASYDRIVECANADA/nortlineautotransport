@@ -3631,7 +3631,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
             >
               <div className="absolute inset-0 bg-black/50 backdrop-blur-sm"></div>
               <div className="relative w-full max-w-5xl max-h-[90vh] rounded-2xl bg-white shadow-2xl border border-gray-200 flex flex-col overflow-hidden">
-                <div className="flex-shrink-0 bg-white flex items-center justify-between px-6 py-4 border-b border-gray-100 rounded-t-2xl">
+                <div className="flex-shrink-0 bg-white flex items-center justify-between px-4 sm:px-6 py-4 border-b border-gray-100 rounded-t-2xl">
                   <div>
                     <div className="text-lg font-semibold text-gray-900">Manual Form</div>
                     <div className="text-sm text-gray-500">Fill out the form manually</div>
@@ -3646,11 +3646,11 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
                   </button>
                 </div>
 
-                <div className="px-6 py-6 overflow-y-auto flex-1 min-h-0">
+                <div className="px-4 sm:px-6 py-4 sm:py-6 overflow-y-auto flex-1 min-h-0">
                   <form onSubmit={preventFormSubmit}>
                     {renderFormDetails()}
 
-                    <div className="mt-6 flex justify-end space-x-3">
+                    <div className="mt-6 flex flex-col-reverse sm:flex-row sm:justify-end gap-3">
                       <button
                         type="button"
                         onClick={() => {
@@ -3662,7 +3662,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
                           setActiveDraftId(null);
                           if (fileInputRef.current) fileInputRef.current.value = '';
                         }}
-                        className="px-6 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium"
+                        className="w-full sm:w-auto px-6 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium"
                       >
                         Clear All
                       </button>
@@ -3670,7 +3670,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
                         type="button"
                         onClick={handleSubmitDocuments}
                         disabled={isSubmitting}
-                        className="px-6 py-3 bg-cyan-500 text-white rounded-lg hover:bg-cyan-600 transition-colors font-medium disabled:opacity-60 disabled:cursor-not-allowed"
+                        className="w-full sm:w-auto px-6 py-3 bg-cyan-500 text-white rounded-lg hover:bg-cyan-600 transition-colors font-medium disabled:opacity-60 disabled:cursor-not-allowed"
                       >
                         {isSubmitting ? 'Submitting...' : 'View Quote Now'}
                       </button>
@@ -3702,12 +3702,12 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
                   key={file.id}
                   className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-white border border-gray-200 rounded-lg p-4 hover:border-cyan-500 transition-colors"
                 >
-                  <div className="flex items-center space-x-3">
+                  <div className="flex items-center gap-3 min-w-0">
                     <div className="bg-cyan-50 p-2 rounded">
                       <FileText className="w-6 h-6 text-cyan-500" />
                     </div>
-                    <div>
-                      <p className="font-medium text-gray-800">{file.name}</p>
+                    <div className="min-w-0">
+                      <p className="font-medium text-gray-800 truncate">{file.name}</p>
                       <p className="text-sm text-gray-500">{file.size}</p>
                     </div>
                   </div>
@@ -3718,7 +3718,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
                         const v = e.target.value as UploadedFile['docType'];
                         setUploadedFiles((prev) => prev.map((x) => (x.id === file.id ? { ...x, docType: v } : x)));
                       }}
-                      className="rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm"
+                      className="w-full sm:w-auto rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm"
                       style={{ color: '#111827', backgroundColor: '#ffffff' }}
                     >
                       <option value="unknown" className="bg-white text-gray-900" style={{ color: '#111827', backgroundColor: '#ffffff' }}>
@@ -3775,7 +3775,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
           <form onSubmit={preventFormSubmit}>
             {renderFormDetails()}
 
-            <div className="mt-6 flex justify-end space-x-3">
+            <div className="mt-6 flex flex-col-reverse sm:flex-row sm:justify-end gap-3">
               <button
                 type="button"
                 onClick={() => {
@@ -3787,7 +3787,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
                   setActiveDraftId(null);
                   if (fileInputRef.current) fileInputRef.current.value = '';
                 }}
-                className="px-6 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium"
+                className="w-full sm:w-auto px-6 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium"
               >
                 Clear All
               </button>
@@ -3795,7 +3795,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
                 type="button"
                 onClick={handleSubmitDocuments}
                 disabled={isSubmitting}
-                className="px-6 py-3 bg-cyan-500 text-white rounded-lg hover:bg-cyan-600 transition-colors font-medium disabled:opacity-60 disabled:cursor-not-allowed"
+                className="w-full sm:w-auto px-6 py-3 bg-cyan-500 text-white rounded-lg hover:bg-cyan-600 transition-colors font-medium disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 {isSubmitting ? 'Submitting...' : formData ? 'View Quote Now' : 'Extract Document'}
               </button>

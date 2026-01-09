@@ -815,12 +815,16 @@ export default function AdminPanel({ onBack, embedded = false, role = 'admin' }:
                       {selectedOrder.documents?.length ? (
                         <div className="space-y-2">
                           {selectedOrder.documents.map((d) => (
-                            <div key={d.id} className="flex items-center justify-between gap-3 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2">
+                            <div
+                              key={d.id}
+                              className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2"
+                            >
                               <div className="min-w-0">
                                 <div className="text-sm font-semibold text-gray-900 truncate">{d.name}</div>
                                 <div className="text-xs text-gray-600 truncate">{d.mime}</div>
                               </div>
-                              <div className="flex items-center gap-3">
+
+                              <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
                                 {!isLocalDev && d.storage?.bucket && d.storage?.path ? (
                                   <button
                                     type="button"
@@ -839,7 +843,7 @@ export default function AdminPanel({ onBack, embedded = false, role = 'admin' }:
                           ))}
                         </div>
                       ) : (
-                        <div className="text-sm text-gray-600">No documents recorded.</div>
+                        <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 text-sm text-gray-600">No documents uploaded.</div>
                       )}
                     </div>
                   </div>
@@ -893,11 +897,11 @@ export default function AdminPanel({ onBack, embedded = false, role = 'admin' }:
                       ) : (
                         (selectedOrder.status_events ?? []).map((ev, idx) => (
                           <div key={`${ev.at}-${idx}`} className="rounded-xl border border-gray-200 bg-gray-50 p-3">
-                            <div className="flex items-center justify-between gap-2">
+                            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
                               <div className="text-sm font-semibold text-gray-900">{ev.status}</div>
                               <div className="text-xs text-gray-600">{new Date(ev.at).toLocaleString()}</div>
                             </div>
-                            {ev.note ? <div className="mt-1 text-sm text-gray-700">{ev.note}</div> : null}
+                            {ev.note ? <div className="mt-2 text-sm text-gray-800 whitespace-pre-wrap">{ev.note}</div> : null}
                           </div>
                         ))
                       )}

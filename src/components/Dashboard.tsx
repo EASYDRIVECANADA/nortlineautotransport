@@ -362,7 +362,7 @@ export default function Dashboard({ onLogout }: DashboardProps) {
                 className="h-9 w-auto"
               />
             </div>
-            <div className="flex items-center space-x-1 sm:space-x-2 md:space-x-4">
+            <div className="flex items-center gap-1 sm:gap-2 md:gap-4 overflow-x-auto whitespace-nowrap">
               <button
                 type="button"
                 onClick={() => {

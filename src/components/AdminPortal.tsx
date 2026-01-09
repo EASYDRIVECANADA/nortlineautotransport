@@ -815,7 +815,7 @@ export default function AdminPortal({ onExit }: AdminPortalProps) {
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap justify-end">
                 {session.role === 'admin' ? (
                   <>
                     <button

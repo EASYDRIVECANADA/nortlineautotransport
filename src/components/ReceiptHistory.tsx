@@ -277,7 +277,7 @@ export default function ReceiptHistory({ onBack, embed = false }: ReceiptHistory
       {embed ? null : (
         <nav className="bg-white/80 backdrop-blur-md shadow-lg border-b border-gray-200/50 sticky top-0 z-50">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="flex justify-between items-center h-16">
+            <div className="flex flex-wrap justify-between items-center gap-3 py-3">
               <div className="flex items-center space-x-3">
                 <img
                   src="/logoclick.png"
@@ -433,7 +433,7 @@ export default function ReceiptHistory({ onBack, embed = false }: ReceiptHistory
         <div className="grid grid-cols-1 gap-6 sm:gap-8">
           <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-200/50 overflow-hidden transition-all duration-300 hover:shadow-2xl">
             <div className="p-5 sm:p-6 bg-gradient-to-r from-cyan-50 to-cyan-100/50 border-b border-cyan-200/50">
-              <div className="flex items-center justify-between gap-4">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
                 <div className="text-lg font-bold text-gray-900">All Receipts</div>
                 <div className="flex items-center gap-3">
                   {userEmail && supabase && localReceiptsCount > 0 ? (
