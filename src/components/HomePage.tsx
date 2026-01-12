@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Truck, Package, MapPin, Clock, CheckCircle, ArrowRight, X, Menu } from 'lucide-react';
+import { Truck, Package, MapPin, Clock, CheckCircle, ArrowRight, X, Menu, Phone, Mail } from 'lucide-react';
 import FileUploadSection from './FileUploadSection';
 import { supabase } from '../lib/supabaseClient';
 
@@ -148,7 +148,7 @@ export default function HomePage({ onLogin }: HomePageProps) {
               </button>
               <button 
                 onClick={scrollToQuote}
-                className="bg-blue-600 text-white px-4 py-2 rounded-lg text-base font-semibold hover:bg-blue-700 transition-colors"
+                className="bg-cyan-600 text-white px-4 py-2 rounded-lg text-base font-semibold hover:bg-cyan-500 transition-colors"
               >
                 Get Quote Now
               </button>
@@ -181,7 +181,7 @@ export default function HomePage({ onLogin }: HomePageProps) {
                   </button>
                   <button 
                     onClick={scrollToQuote}
-                    className="block w-full text-left px-3 py-2 bg-blue-600 text-white rounded-lg text-base font-semibold hover:bg-blue-700 transition-colors mt-2"
+                    className="block w-full text-left px-3 py-2 bg-cyan-600 text-white rounded-lg text-base font-semibold hover:bg-cyan-500 transition-colors mt-2"
                   >
                     Get Quote Now
                   </button>
@@ -260,7 +260,7 @@ export default function HomePage({ onLogin }: HomePageProps) {
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
               <div>
                 <div className="text-lg font-semibold text-gray-900">Sign in</div>
-                <div className="text-sm text-gray-500">Continue to EASYDRIVE</div>
+                <div className="text-sm text-gray-500">Continue to Northline Auto Transport</div>
               </div>
               <button
                 type="button"
@@ -659,6 +659,162 @@ export default function HomePage({ onLogin }: HomePageProps) {
           </div>
         </div>
       </div>
+
+      <section id="about" className="scroll-mt-24 bg-white py-12 sm:py-16 md:py-20">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="mb-8 sm:mb-10">
+            <div className="inline-flex items-center rounded-full bg-cyan-50 px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm font-semibold text-cyan-700 ring-1 ring-cyan-100">
+              About
+            </div>
+            <h2 className="mt-3 sm:mt-4 text-2xl sm:text-3xl md:text-4xl font-bold text-gray-900">
+              About Northline Auto Transport
+            </h2>
+            <p className="mt-3 text-sm sm:text-base text-gray-600 max-w-3xl leading-relaxed">
+              Professional, insured vehicle transportation for dealerships and automotive partners across Ontario and Quebec.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-2 rounded-2xl bg-white p-6 sm:p-7 ring-1 ring-black/5 shadow-xl shadow-gray-900/5">
+              <div className="text-base sm:text-lg font-semibold text-gray-900">Overview</div>
+              <div className="mt-4 space-y-4 text-sm sm:text-base text-gray-600 leading-relaxed">
+                <p>
+                  Northline Auto Transport provides professional, insured vehicle transportation services for dealerships and
+                  automotive partners across Ontario and Quebec.
+                </p>
+                <p>
+                  We focus on one-way vehicle pickup or delivery from Ottawa, built around consistent dealer routes,
+                  predictable scheduling, and transparent pricing.
+                </p>
+                <p>
+                  Our operation is designed to support dealership inventory movement with reliable execution and minimal
+                  friction.
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-2xl bg-white p-6 sm:p-7 ring-1 ring-black/5 shadow-xl shadow-gray-900/5">
+              <div className="text-base sm:text-lg font-semibold text-gray-900">What sets us apart</div>
+              <p className="mt-4 text-sm sm:text-base text-gray-600 leading-relaxed">
+                We believe vehicle transportation should be simple and dependable. By combining professional carrier
+                operations with a modern digital booking experience, we remove the complexity and uncertainty often
+                associated with vehicle logistics.
+              </p>
+              <p className="mt-3 text-sm sm:text-base text-gray-600 leading-relaxed">
+                Every order is handled with clear communication, defined timelines, and full insurance coverage.
+              </p>
+            </div>
+
+            <div className="lg:col-span-3 rounded-2xl bg-gray-900/95 p-6 sm:p-7 ring-1 ring-white/10 shadow-2xl shadow-black/20">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                <div className="text-base sm:text-lg font-semibold text-white">Professional standards</div>
+                <div className="text-xs sm:text-sm font-semibold text-cyan-300">Dealer-focused · insured · predictable</div>
+              </div>
+
+              <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="rounded-xl bg-white/10 p-4 ring-1 ring-white/10">
+                  <div className="text-sm font-semibold text-cyan-300">Insurance coverage</div>
+                  <div className="mt-1 text-sm text-gray-200">Up to $2,000,000</div>
+                </div>
+                <div className="rounded-xl bg-white/10 p-4 ring-1 ring-white/10">
+                  <div className="text-sm font-semibold text-cyan-300">Dealer workflows</div>
+                  <div className="mt-1 text-sm text-gray-200">Built for inventory movement</div>
+                </div>
+                <div className="rounded-xl bg-white/10 p-4 ring-1 ring-white/10">
+                  <div className="text-sm font-semibold text-cyan-300">Optimized routes</div>
+                  <div className="mt-1 text-sm text-gray-200">One-way dealer routes</div>
+                </div>
+                <div className="rounded-xl bg-white/10 p-4 ring-1 ring-white/10">
+                  <div className="text-sm font-semibold text-cyan-300">Clear requirements</div>
+                  <div className="mt-1 text-sm text-gray-200">Booking & payment defined</div>
+                </div>
+              </div>
+
+              <div className="mt-4 text-sm text-gray-300 leading-relaxed">
+                All transportation orders are scheduled only after payment confirmation to ensure timely coordination and
+                consistent service.
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="contact" className="scroll-mt-24 bg-gray-50 py-12 sm:py-16 md:py-20">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-6">
+            <div>
+              <div className="inline-flex items-center rounded-full bg-cyan-50 px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm font-semibold text-cyan-700 ring-1 ring-cyan-100">
+                Contact
+              </div>
+              <h2 className="mt-3 sm:mt-4 text-2xl sm:text-3xl md:text-4xl font-bold text-gray-900">Contact</h2>
+              <p className="mt-3 text-sm sm:text-base text-gray-600 max-w-2xl leading-relaxed">
+                Reach our team for dealership routes, scheduling questions, or booking support.
+              </p>
+            </div>
+            <button
+              onClick={scrollToQuote}
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-cyan-600 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-cyan-500/20 hover:bg-cyan-500 transition-colors"
+            >
+              Get Quote Now
+              <ArrowRight className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="mt-8 grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-2 rounded-2xl bg-white p-6 sm:p-7 ring-1 ring-black/5 shadow-xl shadow-gray-900/5">
+              <div className="text-base font-semibold text-gray-900">Northline Auto Transport</div>
+              <div className="mt-1 text-sm text-gray-600">Ontario & Quebec · Ottawa-based routes</div>
+
+              <div className="mt-6 space-y-4">
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5 flex h-10 w-10 items-center justify-center rounded-lg bg-cyan-50 ring-1 ring-cyan-100">
+                    <Phone className="h-5 w-5 text-cyan-700" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold text-gray-500">Phone</div>
+                    <a
+                      className="mt-1 block text-sm sm:text-base font-semibold text-gray-900 hover:text-cyan-700 transition-colors"
+                      href="tel:+16139155199"
+                    >
+                      613-915-5199
+                    </a>
+                  </div>
+                </div>
+
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5 flex h-10 w-10 items-center justify-center rounded-lg bg-cyan-50 ring-1 ring-cyan-100">
+                    <Mail className="h-5 w-5 text-cyan-700" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold text-gray-500">Email</div>
+                    <a
+                      className="mt-1 block text-sm sm:text-base font-semibold text-gray-900 hover:text-cyan-700 transition-colors break-all"
+                      href="mailto:contact@northlineautotransport.com"
+                    >
+                      contact@northlineautotransport.com
+                    </a>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl bg-gray-900/95 p-6 sm:p-7 ring-1 ring-white/10 shadow-2xl shadow-black/20">
+              <div className="text-sm font-semibold text-cyan-300">Scheduling note</div>
+              <div className="mt-2 text-lg sm:text-xl font-bold text-white">Payment confirmed, then scheduled</div>
+              <p className="mt-3 text-sm text-gray-300 leading-relaxed">
+                All transportation orders are scheduled only after payment confirmation to ensure timely coordination and
+                consistent service.
+              </p>
+              <button
+                onClick={openSignIn}
+                className="mt-6 w-full rounded-lg bg-cyan-500 px-5 py-3 text-sm font-semibold text-white hover:bg-cyan-400 transition-colors"
+              >
+                Sign In
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
 
       <footer className="bg-white text-gray-700 border-t border-gray-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
