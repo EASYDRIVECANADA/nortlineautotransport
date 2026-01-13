@@ -122,7 +122,7 @@ export const handler = async (event) => {
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
       submit_type: 'pay',
-      locale: 'en-CA',
+      locale: 'auto',
       client_reference_id: orderCode,
       customer: stripeCustomerId || undefined,
       payment_intent_data: {
