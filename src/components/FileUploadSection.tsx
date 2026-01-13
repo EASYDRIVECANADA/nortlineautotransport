@@ -2373,6 +2373,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
     if (isSubmitting) return;
 
     if (formData) {
+      if (isManualFormOpen) setIsManualFormOpen(false);
       const dropoffStreet = String(formData.dropoff_location.street ?? '').trim();
       const dropoffNumber = String(formData.dropoff_location.number ?? '').trim();
       const dropoffCity = String(formData.dropoff_location.city ?? '').trim();
@@ -2752,8 +2753,8 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
           pricingCity: extractedOfficial.city,
           pricingStatus: 'official' as const,
         });
-        setShowCostEstimate(true);
-        setSubmitMessage('Document extracted successfully.');
+        setShowCostEstimate(false);
+        setSubmitMessage('Document extracted successfully. Please review the details then click View Quote Now.');
         setSubmitError(false);
         return;
       }
@@ -3033,112 +3034,128 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
 
   return (
     <div>
-      {isRouteRequiredOpen && (
-        <div
-          className="fixed inset-0 z-[10004] flex items-center justify-center p-4"
-          role="dialog"
-          aria-modal="true"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) closeRouteRequiredModal();
-          }}
-        >
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm"></div>
-          <div className="relative w-full max-w-md rounded-2xl bg-white shadow-2xl border border-gray-200 overflow-hidden">
-            <div className="px-6 py-5 border-b border-gray-100">
-              <div className="text-base font-semibold text-gray-900">Route / Service Area required</div>
-              <div className="mt-1 text-sm text-gray-600">
-                Please select a Route / Service Area (or set drop-off coordinates) and try again.
-              </div>
-            </div>
-            <div className="px-6 py-5">
-              <div className="flex justify-end">
-                <button
-                  type="button"
-                  onClick={closeRouteRequiredModal}
-                  className="inline-flex justify-center rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-gray-800 transition-colors"
-                >
-                  Back
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {isDropoffValidationOpen && (
-        <div
-          className="fixed inset-0 z-[10004] flex items-center justify-center p-4"
-          role="dialog"
-          aria-modal="true"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) closeDropoffValidationModal();
-          }}
-        >
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm"></div>
-          <div className="relative w-full max-w-md rounded-2xl bg-white shadow-2xl border border-gray-200 overflow-hidden">
-            <div className="px-6 py-5 border-b border-gray-100">
-              <div className="text-base font-semibold text-gray-900">Drop-off location required</div>
-              <div className="mt-1 text-sm text-gray-600">
-                Please fill in the required Drop-off Address Breakdown fields before continuing.
-              </div>
-            </div>
-            <div className="px-6 py-5">
-              {dropoffValidationMissingFields.length > 0 && (
-                <div className="text-sm text-gray-800">
-                  Missing:
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {dropoffValidationMissingFields.map((f) => (
-                      <span key={f} className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-800 border border-gray-200">
-                        {f}
-                      </span>
-                    ))}
+      {isRouteRequiredOpen && typeof document !== 'undefined'
+        ? createPortal(
+            <div
+              className="fixed inset-0 z-[10006] flex items-center justify-center p-4"
+              role="dialog"
+              aria-modal="true"
+              onMouseDown={(e) => {
+                if (e.target === e.currentTarget) {
+                  setIsRouteRequiredOpen(false);
+                }
+              }}
+            >
+              <div className="absolute inset-0 bg-black/50 backdrop-blur-sm"></div>
+              <div className="relative w-full max-w-md rounded-2xl bg-white shadow-2xl border border-gray-200 overflow-hidden">
+                <div className="px-6 py-5 border-b border-gray-100">
+                  <div className="text-base font-semibold text-gray-900">Route / Service Area required</div>
+                  <div className="mt-1 text-sm text-gray-600">
+                    Please select a Route / Service Area (or set drop-off coordinates) and try again.
                   </div>
                 </div>
-              )}
-
-              <div className="mt-5 flex justify-end">
-                <button
-                  type="button"
-                  onClick={closeDropoffValidationModal}
-                  className="inline-flex justify-center rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-gray-800 transition-colors"
-                >
-                  OK
-                </button>
+                <div className="px-6 py-5">
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={closeRouteRequiredModal}
+                      className="inline-flex justify-center rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-gray-800 transition-colors"
+                    >
+                      Back
+                    </button>
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
-        </div>
-      )}
+            </div>,
+            document.body
+          )
+        : null}
 
-      {showCheckout && (
-        <div
-          className="fixed inset-0 z-[10002] flex items-center justify-center p-4"
-          role="dialog"
-          aria-modal="true"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setShowCheckout(false);
-          }}
-        >
-          <div className="absolute inset-0 bg-gradient-to-br from-black/70 via-black/50 to-black/70 backdrop-blur-sm"></div>
-          <div className="relative w-full max-w-xl max-h-[85vh] rounded-2xl bg-white shadow-2xl border border-gray-200 overflow-hidden">
-            <div className="bg-gradient-to-r from-cyan-500 to-blue-600 text-white px-6 py-4">
-              <div className="text-lg font-semibold">Checkout</div>
-              <div className="text-sm opacity-90">Review details and pay securely</div>
-            </div>
+      {isDropoffValidationOpen && typeof document !== 'undefined'
+        ? createPortal(
+            <div
+              className="fixed inset-0 z-[10006] flex items-center justify-center p-4"
+              role="dialog"
+              aria-modal="true"
+              onMouseDown={(e) => {
+                if (e.target === e.currentTarget) {
+                  setIsDropoffValidationOpen(false);
+                }
+              }}
+            >
+              <div className="absolute inset-0 bg-black/50 backdrop-blur-sm"></div>
+              <div className="relative w-full max-w-md rounded-2xl bg-white shadow-2xl border border-gray-200 overflow-hidden">
+                <div className="px-6 py-5 border-b border-gray-100">
+                  <div className="text-base font-semibold text-gray-900">Drop-off location required</div>
+                  <div className="mt-1 text-sm text-gray-600">
+                    Please fill in the required Drop-off Address Breakdown fields before continuing.
+                  </div>
+                </div>
+                <div className="px-6 py-5">
+                  {dropoffValidationMissingFields.length > 0 && (
+                    <div className="text-sm text-gray-800">
+                      Missing:
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {dropoffValidationMissingFields.map((f) => (
+                          <span
+                            key={f}
+                            className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-800 border border-gray-200"
+                          >
+                            {f}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
-            <div className="p-6 space-y-5 overflow-y-auto ocean-scrollbar" style={{ maxHeight: 'calc(85vh - 72px - 88px)' }}>
-              {(() => {
-                const routeArea = String(costData?.pricingCity ?? formData?.pickup_location?.city ?? formData?.dropoff_location?.service_area ?? '').trim();
-                const serviceTypeLabel =
-                  String(formData?.service?.service_type ?? '') === 'delivery_one_way' ? 'Delivery (one-way)' : 'Pickup (one-way)';
-                const fulfillment = routeArea.toLowerCase().includes('montreal') ? 'As fast as 1–2 business days' : '3–8 business days';
-                const pickupName = String(formData?.pickup_location?.name ?? '').trim();
-                const pickupPhone = String(formData?.pickup_location?.phone ?? '').trim();
-                const pickupAddress = String(formData?.pickup_location?.address ?? '').trim();
-                const dropName = String(formData?.dropoff_location?.name ?? '').trim();
-                const dropPhone = String(formData?.dropoff_location?.phone ?? '').trim();
-                const dropAddress = String(formData?.dropoff_location?.address ?? '').trim();
-                const docCount = draftDocCount ?? uploadedFiles.length;
+                  <div className="mt-5 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={closeDropoffValidationModal}
+                      className="inline-flex justify-center rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-gray-800 transition-colors"
+                    >
+                      OK
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
+
+      {showCheckout && typeof document !== 'undefined'
+        ? createPortal(
+            <div
+              className="fixed inset-0 z-[10006] flex items-center justify-center p-4"
+              role="dialog"
+              aria-modal="true"
+              onMouseDown={(e) => {
+                if (e.target === e.currentTarget) {
+                  setShowCheckout(false);
+                }
+              }}
+            >
+              <div className="absolute inset-0 bg-gradient-to-br from-black/70 via-black/50 to-black/70 backdrop-blur-sm"></div>
+              <div className="relative w-full max-w-xl max-h-[85vh] rounded-2xl bg-white shadow-2xl border border-gray-200 overflow-hidden">
+                <div className="bg-gradient-to-r from-cyan-500 to-blue-600 text-white px-6 py-4">
+                  <div className="text-lg font-semibold">Checkout</div>
+                  <div className="text-sm opacity-90">Review details and pay securely</div>
+                </div>
+
+                <div className="p-6 space-y-5 overflow-y-auto ocean-scrollbar" style={{ maxHeight: 'calc(85vh - 72px - 88px)' }}>
+                  {(() => {
+                    const routeArea = String(costData?.pricingCity ?? formData?.pickup_location?.city ?? formData?.dropoff_location?.service_area ?? '').trim();
+                    const serviceTypeLabel =
+                      String(formData?.service?.service_type ?? '') === 'delivery_one_way' ? 'Delivery (one-way)' : 'Pickup (one-way)';
+                    const fulfillment = routeArea.toLowerCase().includes('montreal') ? 'As fast as 1–2 business days' : '3–8 business days';
+                    const pickupName = String(formData?.pickup_location?.name ?? '').trim();
+                    const pickupPhone = String(formData?.pickup_location?.phone ?? '').trim();
+                    const pickupAddress = String(formData?.pickup_location?.address ?? '').trim();
+                    const dropName = String(formData?.dropoff_location?.name ?? '').trim();
+                    const dropPhone = String(formData?.dropoff_location?.phone ?? '').trim();
+                    const dropAddress = String(formData?.dropoff_location?.address ?? '').trim();
+                    const docCount = draftDocCount ?? uploadedFiles.length;
 
                 return (
                   <div className="rounded-xl border border-gray-200 bg-white p-4">
@@ -3252,39 +3269,41 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
               {submitMessage ? (
                 <div className={`text-sm font-medium ${submitError ? 'text-red-600' : 'text-green-600'}`}>{submitMessage}</div>
               ) : null}
-            </div>
+                </div>
 
-            <div className="border-t border-gray-200 bg-white p-4">
-              <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-3">
-                <button
-                  type="button"
-                  onClick={() => setShowCheckout(false)}
-                  className="inline-flex justify-center rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm font-semibold text-gray-800 hover:bg-gray-50 transition-colors"
-                >
-                  Back
-                </button>
-                <button
-                  type="button"
-                  onClick={saveCurrentAsDraft}
-                  className="inline-flex justify-center rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm font-semibold text-gray-800 hover:bg-gray-50 transition-colors"
-                >
-                  Save as draft
-                </button>
-                <button
-                  type="button"
-                  disabled={isSubmitting}
-                  onClick={async () => {
-                    await handlePayNow();
-                  }}
-                  className="inline-flex justify-center rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-gray-800 transition-colors disabled:opacity-60"
-                >
-                  {isSubmitting ? 'Processing…' : 'Pay now'}
-                </button>
+                <div className="border-t border-gray-200 bg-white p-4">
+                  <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setShowCheckout(false)}
+                      className="inline-flex justify-center rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm font-semibold text-gray-800 hover:bg-gray-50 transition-colors"
+                    >
+                      Back
+                    </button>
+                    <button
+                      type="button"
+                      onClick={saveCurrentAsDraft}
+                      className="inline-flex justify-center rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm font-semibold text-gray-800 hover:bg-gray-50 transition-colors"
+                    >
+                      Save as draft
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSubmitting}
+                      onClick={async () => {
+                        await handlePayNow();
+                      }}
+                      className="inline-flex justify-center rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-gray-800 transition-colors disabled:opacity-60"
+                    >
+                      {isSubmitting ? 'Processing…' : 'Pay now'}
+                    </button>
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
-        </div>
-      )}
+            </div>,
+            document.body
+          )
+        : null}
 
       {showPaymentSuccess && (
         <div
@@ -3347,20 +3366,21 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       )}
 
       {/* Cost Estimate Modal */}
-      {showCostEstimate && costData && (
-        <div
-          className="fixed inset-0 z-[10001] flex items-center justify-center p-4"
-          role="dialog"
-          aria-modal="true"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) {
-              setShowCostEstimate(false);
-              setCostData(null);
-            }
-          }}
-        >
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm"></div>
-          <div className="relative w-full max-w-2xl max-h-[90vh] rounded-2xl bg-white shadow-2xl border border-gray-200 overflow-hidden flex flex-col">
+      {showCostEstimate && costData && typeof document !== 'undefined'
+        ? createPortal(
+            <div
+              className="fixed inset-0 z-[10006] flex items-center justify-center p-4"
+              role="dialog"
+              aria-modal="true"
+              onMouseDown={(e) => {
+                if (e.target === e.currentTarget) {
+                  setShowCostEstimate(false);
+                  setCostData(null);
+                }
+              }}
+            >
+              <div className="absolute inset-0 bg-black/50 backdrop-blur-sm"></div>
+              <div className="relative w-full max-w-2xl max-h-[90vh] rounded-2xl bg-white shadow-2xl border border-gray-200 overflow-hidden flex flex-col">
             <div className="flex-shrink-0 bg-gradient-to-r from-cyan-500 to-blue-600 text-white px-6 py-4">
               <div className="text-lg font-semibold">Transport Quote</div>
               <div className="text-sm opacity-90">Price based on pickup location</div>
@@ -3482,8 +3502,10 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
               </div>
             </div>
           </div>
-        </div>
-      )}
+        </div>,
+        document.body
+      )
+        : null}
 
       <input
         ref={fileInputRef}
