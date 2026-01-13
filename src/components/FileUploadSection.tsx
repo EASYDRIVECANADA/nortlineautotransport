@@ -917,13 +917,13 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
           }
         }
 
-        setShowCostEstimate(false);
-        setShowCheckout(hasCost);
+        setShowCheckout(false);
+        setShowCostEstimate(hasCost);
         setSubmitMessage(
-          hasCost
-            ? null
-            : needsExtraction
-              ? 'Draft loaded. Please click View Quote Now to process the release form.'
+          needsExtraction
+            ? 'Draft loaded. Please click View Quote Now to process the release form.'
+            : hasCost
+              ? 'Draft loaded. Please review your quote and edit details if needed.'
               : 'Draft loaded. Please review details then click View Quote Now to get a quote.'
         );
         setSubmitError(false);
@@ -2409,13 +2409,14 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       const dropoffLat = Number(dropoffLatRaw);
       const dropoffLng = Number(dropoffLngRaw);
 
-      const selectedServiceArea = String(formData?.dropoff_location?.service_area ?? '').trim();
+      const pickupCity = String(formData?.pickup_location?.city ?? '').trim();
+      const pickupAddressBase =
+        String(formData?.pickup_location?.address ?? '').trim() || String(formData?.selling_dealership?.address ?? '').trim();
+      const pickupName =
+        String(formData?.pickup_location?.name ?? '').trim() || String(formData?.selling_dealership?.name ?? '').trim();
+      const pickupLookup = `${pickupAddressBase} ${pickupName} ${pickupCity}`.trim();
 
-      const official =
-        getOfficialCityPriceForServiceArea(selectedServiceArea) ??
-        getOfficialCityPriceForAddress(
-          `${String(formData?.dropoff_location?.address ?? '').trim()} ${String(formData?.dropoff_location?.name ?? '').trim()}`.trim()
-        );
+      const official = getOfficialCityPriceForServiceArea(pickupCity) ?? getOfficialCityPriceForAddress(pickupLookup);
 
       const hasValidDropoffCoords =
         dropoffLatRaw !== '' &&
@@ -2540,12 +2541,18 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
         const dropoffLat = Number(dropoffLatStr);
         const dropoffLng = Number(dropoffLngStr);
 
-        const selectedServiceArea = String(extracted?.dropoff_location?.service_area ?? '').trim();
-        const official =
-          getOfficialCityPriceForServiceArea(selectedServiceArea) ??
-          getOfficialCityPriceForAddress(
-            `${String(extracted?.dropoff_location?.address ?? '').trim()} ${String(extracted?.dropoff_location?.name ?? '').trim()}`.trim()
-          );
+        const pickupAddress =
+          String(extracted?.pickup_location?.address ?? '').trim() || String(extracted?.selling_dealership?.address ?? '').trim();
+
+        const pickupQuery =
+          pickupAddress ||
+          String(extracted?.pickup_location?.name ?? '').trim() ||
+          String(extracted?.selling_dealership?.name ?? '').trim();
+
+        const pickupCity = String(extracted?.pickup_location?.city ?? '').trim();
+        const pickupLookup = `${pickupQuery} ${pickupCity}`.trim();
+
+        const official = getOfficialCityPriceForServiceArea(pickupCity) ?? getOfficialCityPriceForAddress(pickupLookup);
 
         const hasValidDropoffCoords =
           dropoffLatStr !== '' &&
@@ -2558,18 +2565,9 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
           dropoffLng <= 180 &&
           !(dropoffLat === 0 && dropoffLng === 0);
 
-        const pickupAddress =
-          String(extracted?.pickup_location?.address ?? '').trim() ||
-          String(extracted?.selling_dealership?.address ?? '').trim();
-
         const dropoffAddressBase = String(extracted?.dropoff_location?.address ?? '').trim();
         const dropoffName = String(extracted?.dropoff_location?.name ?? '').trim();
         const dropoffAddress = dropoffName ? `${dropoffAddressBase} ${dropoffName}`.trim() : dropoffAddressBase;
-
-        const pickupQuery =
-          pickupAddress ||
-          String(extracted?.pickup_location?.name ?? '').trim() ||
-          String(extracted?.selling_dealership?.name ?? '').trim();
 
         const dropoffQuery = dropoffAddress || String(extracted?.dropoff_location?.name ?? '').trim();
 
@@ -2733,12 +2731,14 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       const extracted = initFormData(output);
       setFormData(extracted);
 
-      const extractedServiceArea = String(extracted?.dropoff_location?.service_area ?? '').trim();
-      const extractedOfficial =
-        getOfficialCityPriceForServiceArea(extractedServiceArea) ??
-        getOfficialCityPriceForAddress(
-          `${String(extracted?.dropoff_location?.address ?? '').trim()} ${String(extracted?.dropoff_location?.name ?? '').trim()}`.trim()
-        );
+      const pickupCity = String(extracted?.pickup_location?.city ?? '').trim();
+      const pickupAddressBase =
+        String(extracted?.pickup_location?.address ?? '').trim() || String(extracted?.selling_dealership?.address ?? '').trim();
+      const pickupName =
+        String(extracted?.pickup_location?.name ?? '').trim() || String(extracted?.selling_dealership?.name ?? '').trim();
+      const pickupLookup = `${pickupAddressBase} ${pickupName} ${pickupCity}`.trim();
+
+      const extractedOfficial = getOfficialCityPriceForServiceArea(pickupCity) ?? getOfficialCityPriceForAddress(pickupLookup);
       if (extractedOfficial) {
         setCostData({
           distance: 0,
@@ -2909,7 +2909,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       const finalReceiptText = responseText ? responseText : fallbackReceipt;
       const normalizedReceipt = String(finalReceiptText).replace(/\r\n/g, '\n').trim();
 
-      const routeArea = String(costData?.pricingCity ?? formData?.dropoff_location?.service_area ?? '').trim();
+      const routeArea = String(costData?.pricingCity ?? formData?.pickup_location?.city ?? formData?.dropoff_location?.service_area ?? '').trim();
       const subtotal = Number(costData?.cost ?? 0);
       const totals = computeTotals(subtotal, routeArea);
       const orderCode = makeLocalOrderId();
@@ -3122,7 +3122,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
 
             <div className="p-6 space-y-5 overflow-y-auto ocean-scrollbar" style={{ maxHeight: 'calc(85vh - 72px - 88px)' }}>
               {(() => {
-                const routeArea = String(costData?.pricingCity ?? formData?.dropoff_location?.service_area ?? '').trim();
+                const routeArea = String(costData?.pricingCity ?? formData?.pickup_location?.city ?? formData?.dropoff_location?.service_area ?? '').trim();
                 const serviceTypeLabel =
                   String(formData?.service?.service_type ?? '') === 'delivery_one_way' ? 'Delivery (one-way)' : 'Pickup (one-way)';
                 const fulfillment = routeArea.toLowerCase().includes('montreal') ? 'As fast as 1–2 business days' : '3–8 business days';
@@ -3166,12 +3166,12 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
               })()}
 
               {(() => {
-                const routeArea = String(costData?.pricingCity ?? formData?.dropoff_location?.service_area ?? '').trim();
+                const routeArea = String(formData?.pickup_location?.city ?? costData?.pricingCity ?? formData?.dropoff_location?.service_area ?? '').trim();
                 const subtotal = Number(costData?.cost ?? 0);
                 const totals = computeTotals(subtotal, routeArea);
                 return (
                   <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
-                    <div className="text-xs font-medium text-gray-500">Totals</div>
+                    <div className="text-xs font-medium text-gray-500">Totals (origin-based pricing)</div>
                     <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
                       <div className="rounded-lg bg-white border border-gray-200 p-3">
                         <div className="text-xs text-gray-500">Subtotal (before tax)</div>
@@ -3180,7 +3180,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
                       <div className="rounded-lg bg-white border border-gray-200 p-3">
                         <div className="text-xs text-gray-500">Tax {totals.tax_note ? `(${totals.tax_note})` : ''}</div>
                         <div className="mt-1 font-semibold text-gray-900">${totals.tax.toFixed(2)}</div>
-                        <div className="text-xs text-gray-500">Rate: {(totals.tax_rate * 100).toFixed(0)}%</div>
+                        <div className="text-xs text-gray-500">Rate: {(totals.tax_rate * 100).toFixed(2)}%</div>
                       </div>
                       <div className="rounded-lg bg-white border border-gray-200 p-3">
                         <div className="text-xs text-gray-500">Total</div>
@@ -3357,15 +3357,15 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
           <div className="relative w-full max-w-2xl max-h-[90vh] rounded-2xl bg-white shadow-2xl border border-gray-200 overflow-hidden flex flex-col">
             <div className="flex-shrink-0 bg-gradient-to-r from-cyan-500 to-blue-600 text-white px-6 py-4">
               <div className="text-lg font-semibold">Transport Quote</div>
-              <div className="text-sm opacity-90">Route and cost estimate</div>
+              <div className="text-sm opacity-90">Price based on pickup location</div>
             </div>
 
             <div className="flex-1 overflow-y-auto p-6">
               <div className="mb-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-                  <div className="text-xs font-medium text-gray-500">Route / Service Area</div>
+                  <div className="text-xs font-medium text-gray-500">Pickup location (pricing)</div>
                   <div className="mt-1 text-sm font-semibold text-gray-900">
-                    {String(costData?.pricingCity ?? formData?.dropoff_location?.service_area ?? '-')}
+                    {String(costData?.pricingCity ?? formData?.pickup_location?.city ?? formData?.dropoff_location?.service_area ?? '-')}
                   </div>
                 </div>
                 <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">

@@ -82,7 +82,7 @@ export const OFFICIAL_CITY_TOTAL_PRICES: Array<{ city: string; total_price: numb
     match: (addr) => /\btrois[-\s]*rivi(e|è)res\b/i.test(addr) || /\btrois\s*rivieres\b/i.test(addr),
   },
   { city: 'Montreal', total_price: 285, match: (addr) => /\bmontreal\b/i.test(addr) || /\bmontr(e|é)al\b/i.test(addr) },
-  { city: 'Ottawa', total_price: 260, match: (addr) => /\bottawa\b/i.test(addr) },
+  { city: 'Ottawa', total_price: 285, match: (addr) => /\bottawa\b/i.test(addr) },
   { city: 'Quebec City', total_price: 435, match: (addr) => /\bqu(e|é)bec\s*city\b/i.test(addr) || /\bville\s*de\s*qu(e|é)bec\b/i.test(addr) },
 ];
 
