@@ -765,7 +765,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
   };
 
   const saveDraftBeforeSignIn = useCallback(async () => {
-    if (uploadedFiles.length === 0) return;
+    if (uploadedFiles.length === 0 && !formData && !costData) return;
 
     const draftId = activeDraftId ?? `${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const baseForm: FormData =
@@ -813,15 +813,17 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       needsExtraction: !formData,
     };
 
-    try {
-      await putDraftFiles(
-        draftId,
-        uploadedFiles
-          .map((f) => f?.file)
-          .filter((f): f is File => Boolean(f))
-      );
-    } catch {
-      // ignore
+    if (uploadedFiles.length > 0) {
+      try {
+        await putDraftFiles(
+          draftId,
+          uploadedFiles
+            .map((f) => f?.file)
+            .filter((f): f is File => Boolean(f))
+        );
+      } catch {
+        // ignore
+      }
     }
 
     try {
@@ -2395,6 +2397,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
         !!dropoffCountry;
 
       if (!isDropoffBreakdownComplete) {
+        if (isManualFormOpen) setIsManualFormOpen(false);
         setDropoffValidationMissingFields(missingFields);
         setIsDropoffValidationOpen(true);
         return;
@@ -2436,6 +2439,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
             ? { ...estimate, cost: official.total_price, pricingCity: official.city, pricingStatus: 'official' as const }
             : { ...estimate, pricingStatus: 'estimated' as const };
           setCostData(nextCost);
+          if (isManualFormOpen) setIsManualFormOpen(false);
           setShowCostEstimate(true);
           return;
         }
@@ -2443,10 +2447,12 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
 
       if (official) {
         setCostData({ distance: 0, cost: official.total_price, pricingCity: official.city, pricingStatus: 'official' as const });
+        if (isManualFormOpen) setIsManualFormOpen(false);
         setShowCostEstimate(true);
         return;
       }
 
+      if (isManualFormOpen) setIsManualFormOpen(false);
       openRouteRequiredModal();
       return;
     }
