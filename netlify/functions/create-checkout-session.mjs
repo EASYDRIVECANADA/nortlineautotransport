@@ -66,7 +66,7 @@ export const handler = async (event) => {
     const routeArea = String(order.route_area ?? '').trim().toLowerCase();
     const isQc = routeArea.includes('montreal') || routeArea.includes('quebec');
     const taxRate = isQc ? 0.14975 : 0.13;
-    const taxLabel = isQc ? 'QC (GST+QST)' : 'ON (HST)';
+    const taxLabel = isQc ? 'GST + QST (QC)' : 'HST (ON)';
     const taxAmount = Math.round(amount * taxRate * 100) / 100;
 
     const checkoutCurrency = 'cad';
@@ -75,6 +75,13 @@ export const handler = async (event) => {
     const stripe = new Stripe(stripeSecret, { apiVersion: '2024-06-20' });
 
     const now = new Date().toISOString();
+
+    const routeAreaDisplay = String(order.route_area ?? '').trim();
+    const orderLabel = String(order.order_code ?? '').trim();
+    const serviceLabel = 'EasyDrive Vehicle Transport';
+    const productDescription = [routeAreaDisplay ? `Route: ${routeAreaDisplay}` : '', orderLabel ? `Order: ${orderLabel}` : '']
+      .filter(Boolean)
+      .join(' • ');
 
     let stripeCustomerId = null;
     try {
@@ -114,9 +121,23 @@ export const handler = async (event) => {
 
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
+      submit_type: 'pay',
+      locale: 'en-CA',
+      client_reference_id: orderCode,
       customer: stripeCustomerId || undefined,
       payment_intent_data: {
         setup_future_usage: 'off_session',
+        description: productDescription || undefined,
+        metadata: {
+          order_id: String(order.id ?? ''),
+          order_code: orderLabel,
+          route_area: routeAreaDisplay,
+        },
+      },
+      custom_text: {
+        submit: {
+          message: 'Secure payment powered by Stripe. A receipt will be emailed after payment.',
+        },
       },
       line_items: [
         {
@@ -125,7 +146,8 @@ export const handler = async (event) => {
             currency: checkoutCurrency,
             unit_amount: Math.round(amount * 100),
             product_data: {
-              name: `EasyDrive Transport (${order.order_code})`,
+              name: routeAreaDisplay ? `${serviceLabel} — ${routeAreaDisplay}` : serviceLabel,
+              description: productDescription || undefined,
             },
           },
         },
@@ -135,7 +157,7 @@ export const handler = async (event) => {
             currency: checkoutCurrency,
             unit_amount: Math.round(taxAmount * 100),
             product_data: {
-              name: `Tax ${taxLabel} (${taxRateLabel}%)`,
+              name: `${taxLabel} (${taxRateLabel}%)`,
             },
           },
         },
@@ -145,6 +167,7 @@ export const handler = async (event) => {
       metadata: {
         order_id: order.id,
         order_code: order.order_code,
+        route_area: routeAreaDisplay,
       },
     });
 
