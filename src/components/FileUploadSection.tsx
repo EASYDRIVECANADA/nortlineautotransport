@@ -918,7 +918,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
         }
 
         setShowCheckout(false);
-        setShowCostEstimate(hasCost);
+        setShowCostEstimate(false);
         setSubmitMessage(
           needsExtraction
             ? 'Draft loaded. Please click View Quote Now to process the release form.'
