@@ -2822,15 +2822,17 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
         }
       })();
 
-      const filesWithBase64 = await Promise.all(
-        uploadedFiles.map(async (f) => ({
-          name: f.name,
-          type: f.type,
-          size: f.file.size,
-          base64: await fileToBase64(f.file),
-          docType: f.docType,
-        }))
-      );
+      const filesWithBase64 = uploadedFiles.length
+        ? await Promise.all(
+            uploadedFiles.map(async (f) => ({
+              name: f.name,
+              type: f.type,
+              size: f.file.size,
+              base64: await fileToBase64(f.file),
+              docType: f.docType,
+            }))
+          )
+        : [];
       const files = filesWithBase64.map((f) => ({ name: f.name, type: f.type, size: f.size, base64: f.base64 }));
 
       let responseText: string | null = null;
@@ -2994,15 +2996,17 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       const token = await getAccessToken();
       if (!token) throw new Error('Not authenticated');
 
-      const uploadRes = await fetch('/.netlify/functions/upload-order-documents', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ order_code: orderCode, access_token: token, files: filesWithBase64 }),
-      });
+      if (filesWithBase64.length) {
+        const uploadRes = await fetch('/.netlify/functions/upload-order-documents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ order_code: orderCode, access_token: token, files: filesWithBase64 }),
+        });
 
-      if (!uploadRes.ok) {
-        const text = await uploadRes.text().catch(() => '');
-        throw new Error(text || 'Failed to save uploaded documents');
+        if (!uploadRes.ok) {
+          const text = await uploadRes.text().catch(() => '');
+          throw new Error(text || 'Failed to save uploaded documents');
+        }
       }
 
       const res = await fetch('/.netlify/functions/create-checkout-session', {
