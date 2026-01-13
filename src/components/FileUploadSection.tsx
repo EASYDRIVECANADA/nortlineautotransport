@@ -2414,13 +2414,14 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       const dropoffLng = Number(dropoffLngRaw);
 
       const pickupCity = String(formData?.pickup_location?.city ?? '').trim();
-      const pickupAddressBase =
-        String(formData?.pickup_location?.address ?? '').trim() || String(formData?.selling_dealership?.address ?? '').trim();
-      const pickupName =
-        String(formData?.pickup_location?.name ?? '').trim() || String(formData?.selling_dealership?.name ?? '').trim();
+      const selectedServiceArea = String(formData?.dropoff_location?.service_area ?? '').trim();
+      const pricingArea = pickupCity || selectedServiceArea;
+      const pickupAddressBase = String(formData?.pickup_location?.address ?? '').trim();
+      const pickupName = String(formData?.pickup_location?.name ?? '').trim();
       const pickupLookup = `${pickupAddressBase} ${pickupName} ${pickupCity}`.trim();
 
-      const official = getOfficialCityPriceForServiceArea(pickupCity) ?? getOfficialCityPriceForAddress(pickupLookup);
+      const official =
+        getOfficialCityPriceForServiceArea(pricingArea) ?? (pickupLookup ? getOfficialCityPriceForAddress(pickupLookup) : null);
 
       const hasValidDropoffCoords =
         dropoffLatRaw !== '' &&
@@ -2548,18 +2549,17 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
         const dropoffLat = Number(dropoffLatStr);
         const dropoffLng = Number(dropoffLngStr);
 
-        const pickupAddress =
-          String(extracted?.pickup_location?.address ?? '').trim() || String(extracted?.selling_dealership?.address ?? '').trim();
-
-        const pickupQuery =
-          pickupAddress ||
-          String(extracted?.pickup_location?.name ?? '').trim() ||
-          String(extracted?.selling_dealership?.name ?? '').trim();
-
         const pickupCity = String(extracted?.pickup_location?.city ?? '').trim();
+        const selectedServiceArea = String(extracted?.dropoff_location?.service_area ?? '').trim();
+        const pricingArea = pickupCity || selectedServiceArea;
+        const pickupAddress = String(extracted?.pickup_location?.address ?? '').trim();
+        const pickupName = String(extracted?.pickup_location?.name ?? '').trim();
+
+        const pickupQuery = pickupAddress || pickupName;
         const pickupLookup = `${pickupQuery} ${pickupCity}`.trim();
 
-        const official = getOfficialCityPriceForServiceArea(pickupCity) ?? getOfficialCityPriceForAddress(pickupLookup);
+        const official =
+          getOfficialCityPriceForServiceArea(pricingArea) ?? (pickupLookup ? getOfficialCityPriceForAddress(pickupLookup) : null);
 
         const hasValidDropoffCoords =
           dropoffLatStr !== '' &&
@@ -2739,13 +2739,14 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       setFormData(extracted);
 
       const pickupCity = String(extracted?.pickup_location?.city ?? '').trim();
-      const pickupAddressBase =
-        String(extracted?.pickup_location?.address ?? '').trim() || String(extracted?.selling_dealership?.address ?? '').trim();
-      const pickupName =
-        String(extracted?.pickup_location?.name ?? '').trim() || String(extracted?.selling_dealership?.name ?? '').trim();
+      const selectedServiceArea = String(extracted?.dropoff_location?.service_area ?? '').trim();
+      const pricingArea = pickupCity || selectedServiceArea;
+      const pickupAddressBase = String(extracted?.pickup_location?.address ?? '').trim();
+      const pickupName = String(extracted?.pickup_location?.name ?? '').trim();
       const pickupLookup = `${pickupAddressBase} ${pickupName} ${pickupCity}`.trim();
 
-      const extractedOfficial = getOfficialCityPriceForServiceArea(pickupCity) ?? getOfficialCityPriceForAddress(pickupLookup);
+      const extractedOfficial =
+        getOfficialCityPriceForServiceArea(pricingArea) ?? (pickupLookup ? getOfficialCityPriceForAddress(pickupLookup) : null);
       if (extractedOfficial) {
         setCostData({
           distance: 0,
