@@ -4,10 +4,22 @@ export type VehicleType = 'standard';
 export const QUOTE_MARKUP = 35;
 
 const PRICING_OVERRIDES_KEY = 'ed_pricing_overrides';
+const STAFF_SESSION_KEY = 'ed_staff_session';
 
 export const getPricingOverrides = (): Record<string, number> => {
   try {
     if (typeof window === 'undefined') return {};
+
+    try {
+      const rawSession = window.localStorage.getItem(STAFF_SESSION_KEY);
+      const parsed = rawSession ? (JSON.parse(rawSession) as unknown) : null;
+      const obj = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+      const role = String(obj?.role ?? '').trim().toLowerCase();
+      if (role !== 'admin') return {};
+    } catch {
+      return {};
+    }
+
     const raw = window.localStorage.getItem(PRICING_OVERRIDES_KEY);
     const parsed = raw ? (JSON.parse(raw) as unknown) : null;
     if (!parsed || typeof parsed !== 'object') return {};

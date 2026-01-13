@@ -2415,7 +2415,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
 
       const pickupCity = String(formData?.pickup_location?.city ?? '').trim();
       const selectedServiceArea = String(formData?.dropoff_location?.service_area ?? '').trim();
-      const pricingArea = pickupCity || selectedServiceArea;
+      const pricingArea = selectedServiceArea || pickupCity;
       const pickupAddressBase = String(formData?.pickup_location?.address ?? '').trim();
       const pickupName = String(formData?.pickup_location?.name ?? '').trim();
       const pickupLookup = `${pickupAddressBase} ${pickupName} ${pickupCity}`.trim();
@@ -2551,7 +2551,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
 
         const pickupCity = String(extracted?.pickup_location?.city ?? '').trim();
         const selectedServiceArea = String(extracted?.dropoff_location?.service_area ?? '').trim();
-        const pricingArea = pickupCity || selectedServiceArea;
+        const pricingArea = selectedServiceArea || pickupCity;
         const pickupAddress = String(extracted?.pickup_location?.address ?? '').trim();
         const pickupName = String(extracted?.pickup_location?.name ?? '').trim();
 
@@ -2740,7 +2740,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
 
       const pickupCity = String(extracted?.pickup_location?.city ?? '').trim();
       const selectedServiceArea = String(extracted?.dropoff_location?.service_area ?? '').trim();
-      const pricingArea = pickupCity || selectedServiceArea;
+      const pricingArea = selectedServiceArea || pickupCity;
       const pickupAddressBase = String(extracted?.pickup_location?.address ?? '').trim();
       const pickupName = String(extracted?.pickup_location?.name ?? '').trim();
       const pickupLookup = `${pickupAddressBase} ${pickupName} ${pickupCity}`.trim();
@@ -2919,7 +2919,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       const finalReceiptText = responseText ? responseText : fallbackReceipt;
       const normalizedReceipt = String(finalReceiptText).replace(/\r\n/g, '\n').trim();
 
-      const routeArea = String(costData?.pricingCity ?? formData?.pickup_location?.city ?? formData?.dropoff_location?.service_area ?? '').trim();
+      const routeArea = String(costData?.pricingCity ?? formData?.dropoff_location?.service_area ?? formData?.pickup_location?.city ?? '').trim();
       const subtotal = Number(costData?.cost ?? 0);
       const totals = computeTotals(subtotal, routeArea);
       const orderCode = makeLocalOrderId();
@@ -3150,7 +3150,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
 
                 <div className="p-6 space-y-5 overflow-y-auto ocean-scrollbar" style={{ maxHeight: 'calc(85vh - 72px - 88px)' }}>
                   {(() => {
-                    const routeArea = String(costData?.pricingCity ?? formData?.pickup_location?.city ?? formData?.dropoff_location?.service_area ?? '').trim();
+                    const routeArea = String(costData?.pricingCity ?? formData?.dropoff_location?.service_area ?? formData?.pickup_location?.city ?? '').trim();
                     const serviceTypeLabel =
                       String(formData?.service?.service_type ?? '') === 'delivery_one_way' ? 'Delivery (one-way)' : 'Pickup (one-way)';
                     const fulfillment = routeArea.toLowerCase().includes('montreal') ? 'As fast as 1–2 business days' : '3–8 business days';
@@ -3194,7 +3194,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
               })()}
 
               {(() => {
-                const routeArea = String(formData?.pickup_location?.city ?? costData?.pricingCity ?? formData?.dropoff_location?.service_area ?? '').trim();
+                const routeArea = String(costData?.pricingCity ?? formData?.dropoff_location?.service_area ?? formData?.pickup_location?.city ?? '').trim();
                 const subtotal = Number(costData?.cost ?? 0);
                 const totals = computeTotals(subtotal, routeArea);
                 return (
