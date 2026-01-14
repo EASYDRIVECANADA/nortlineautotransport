@@ -52,8 +52,8 @@ export const handler = async (event) => {
       : supabaseAuth;
 
     const selectFields = supabaseServiceRoleKey
-      ? 'id, order_code, price_before_tax, currency, user_id, payment_status, route_area'
-      : 'id, order_code, price_before_tax, currency, payment_status, route_area';
+      ? 'id, order_code, price_before_tax, currency, user_id, payment_status, route_area, form_data'
+      : 'id, order_code, price_before_tax, currency, payment_status, route_area, form_data';
 
     const { data: order, error: orderErr } = await db.from('orders').select(selectFields).eq('order_code', orderCode).maybeSingle();
 
@@ -62,6 +62,12 @@ export const handler = async (event) => {
 
     const amount = Number(order.price_before_tax);
     if (!Number.isFinite(amount) || amount <= 0) return { statusCode: 400, body: 'Invalid order amount' };
+
+    const orderFormData = order?.form_data && typeof order.form_data === 'object' ? order.form_data : null;
+    const rawLoadingFee = Number(orderFormData?.vehicle_loading_fee ?? 0);
+    const loadingFee = Number.isFinite(rawLoadingFee) && rawLoadingFee > 0 ? rawLoadingFee : 0;
+    const safeLoadingFee = loadingFee > 0 && loadingFee < amount ? loadingFee : 0;
+    const transportAmount = safeLoadingFee ? amount - safeLoadingFee : amount;
 
     const routeArea = String(order.route_area ?? '').trim().toLowerCase();
     const isQc = routeArea.includes('montreal') || routeArea.includes('quebec');
@@ -119,6 +125,45 @@ export const handler = async (event) => {
       }
     }
 
+    const lineItems = [
+      {
+        quantity: 1,
+        price_data: {
+          currency: checkoutCurrency,
+          unit_amount: Math.round(transportAmount * 100),
+          product_data: {
+            name: routeAreaDisplay ? `${serviceLabel} — ${routeAreaDisplay}` : serviceLabel,
+            description: productDescription || undefined,
+          },
+        },
+      },
+    ];
+
+    if (safeLoadingFee) {
+      lineItems.push({
+        quantity: 1,
+        price_data: {
+          currency: checkoutCurrency,
+          unit_amount: Math.round(safeLoadingFee * 100),
+          product_data: {
+            name: 'Loading fee',
+            description: 'Non-running/non-driving vehicle handling (paid at checkout).',
+          },
+        },
+      });
+    }
+
+    lineItems.push({
+      quantity: 1,
+      price_data: {
+        currency: checkoutCurrency,
+        unit_amount: Math.round(taxAmount * 100),
+        product_data: {
+          name: `${taxLabel} (${taxRateLabel}%)`,
+        },
+      },
+    });
+
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
       submit_type: 'pay',
@@ -132,6 +177,7 @@ export const handler = async (event) => {
           order_id: String(order.id ?? ''),
           order_code: orderLabel,
           route_area: routeAreaDisplay,
+          vehicle_loading_fee: String(safeLoadingFee || 0),
         },
       },
       custom_text: {
@@ -139,29 +185,7 @@ export const handler = async (event) => {
           message: 'Secure payment powered by Stripe. A receipt will be emailed after payment.',
         },
       },
-      line_items: [
-        {
-          quantity: 1,
-          price_data: {
-            currency: checkoutCurrency,
-            unit_amount: Math.round(amount * 100),
-            product_data: {
-              name: routeAreaDisplay ? `${serviceLabel} — ${routeAreaDisplay}` : serviceLabel,
-              description: productDescription || undefined,
-            },
-          },
-        },
-        {
-          quantity: 1,
-          price_data: {
-            currency: checkoutCurrency,
-            unit_amount: Math.round(taxAmount * 100),
-            product_data: {
-              name: `${taxLabel} (${taxRateLabel}%)`,
-            },
-          },
-        },
-      ],
+      line_items: lineItems,
       success_url: `${origin}/?checkout=success&order=${encodeURIComponent(order.order_code)}`,
       cancel_url: `${origin}/?checkout=cancel&order=${encodeURIComponent(order.order_code)}`,
       metadata: {

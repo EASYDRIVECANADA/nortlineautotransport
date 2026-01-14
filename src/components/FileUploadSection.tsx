@@ -456,7 +456,55 @@ const pickFirstString = (...values: unknown[]): string => {
   return '';
 };
 
+const collectTextFromUnknown = (value: unknown, maxChars = 20000): string => {
+  const parts: string[] = [];
+  let total = 0;
+
+  const push = (s: string) => {
+    const next = String(s ?? '').trim();
+    if (!next) return;
+    if (total >= maxChars) return;
+    const slice = next.length + total > maxChars ? next.slice(0, Math.max(0, maxChars - total)) : next;
+    if (!slice) return;
+    parts.push(slice);
+    total += slice.length;
+  };
+
+  const walk = (v: unknown) => {
+    if (total >= maxChars) return;
+    if (typeof v === 'string') {
+      push(v);
+      return;
+    }
+    if (!v) return;
+    if (Array.isArray(v)) {
+      for (const item of v) walk(item);
+      return;
+    }
+    if (typeof v === 'object') {
+      for (const item of Object.values(v as Record<string, unknown>)) walk(item);
+    }
+  };
+
+  walk(value);
+  return parts.join('\n');
+};
+
 const normalizeLooseKey = (value: string): string => String(value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+const inferMimeTypeFromName = (name: string): string => {
+  const lower = String(name ?? '').toLowerCase();
+  if (lower.endsWith('.pdf')) return 'application/pdf';
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+  return 'application/octet-stream';
+};
+
+const normalizeMimeType = (name: string, type: unknown): string => {
+  const raw = String(type ?? '').trim();
+  if (raw && raw !== 'unknown') return raw;
+  return inferMimeTypeFromName(name);
+};
 
 const getLooseValue = (obj: Record<string, unknown> | null, ...keys: string[]): unknown => {
   if (!obj) return undefined;
@@ -498,7 +546,87 @@ const extractOdometerKmFromText = (text: string): string => {
   return numeric;
 };
 
+const extractTransactionIdFromText = (text: string): string => {
+  const raw = String(text ?? '').trim();
+  if (!raw) return '';
+  const match = raw.match(/\bTransaction\s*(?:ID|#|No\.?|Number)?\s*[:#-]?\s*([0-9][0-9-]{2,})\b/i);
+  return match?.[1] ?? '';
+};
+
+const extractReleaseFormNumberFromText = (text: string): string => {
+  const raw = String(text ?? '').trim();
+  if (!raw) return '';
+  const match = raw.match(/\bRelease\s*Form\s*(?:#|No\.?|Number)?\s*[:#-]?\s*([A-Z0-9][A-Z0-9-]{1,})\b/i);
+  return match?.[1] ?? '';
+};
+
+const extractVinFromText = (text: string): string => {
+  const raw = String(text ?? '').toUpperCase();
+  if (!raw) return '';
+
+  const direct = raw.match(/\b[A-HJ-NPR-Z0-9]{17}\b/g) ?? [];
+  if (direct[0]) return direct[0];
+
+  const looseMatches = raw.match(/(?:[A-HJ-NPR-Z0-9][\s\-]*){17}/g) ?? [];
+  for (const match of looseMatches) {
+    const compact = match.replace(/[^A-HJ-NPR-Z0-9]/g, '');
+    if (compact.length === 17 && /^[A-HJ-NPR-Z0-9]{17}$/.test(compact)) return compact;
+  }
+
+  return '';
+};
+
+const normalizeDateLike = (value: string): string => {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  const ymd = raw.match(/\b(19\d{2}|20\d{2})[\/-](\d{1,2})[\/-](\d{1,2})\b/);
+  if (ymd) {
+    const y = ymd[1];
+    const m = String(ymd[2]).padStart(2, '0');
+    const d = String(ymd[3]).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  const mdy = raw.match(/\b(\d{1,2})[\/-](\d{1,2})[\/-](19\d{2}|20\d{2})\b/);
+  if (mdy) {
+    const m = String(mdy[1]).padStart(2, '0');
+    const d = String(mdy[2]).padStart(2, '0');
+    const y = mdy[3];
+    return `${y}-${m}-${d}`;
+  }
+  return '';
+};
+
+const extractArrivalDateFromText = (text: string): string => {
+  const raw = String(text ?? '').trim();
+  if (!raw) return '';
+  const match = raw.match(/\bArrival\s*Date\b\s*[:#-]?\s*([0-9]{1,4}[\/-][0-9]{1,2}[\/-][0-9]{1,4})\b/i);
+  const candidate = match?.[1] ?? '';
+  return normalizeDateLike(candidate);
+};
+
 const extractWebhookOutput = (data: unknown): unknown => {
+  const isBlankValue = (value: unknown): boolean => {
+    if (value === undefined || value === null) return true;
+    if (typeof value === 'string') return value.trim() === '';
+    return false;
+  };
+
+  const mergeNonBlank = (base: Record<string, unknown>, incoming: Record<string, unknown>): Record<string, unknown> => {
+    const out: Record<string, unknown> = { ...base };
+    for (const [key, nextVal] of Object.entries(incoming)) {
+      const prevVal = out[key];
+      if (isRecord(prevVal) && isRecord(nextVal)) {
+        out[key] = mergeNonBlank(prevVal as Record<string, unknown>, nextVal as Record<string, unknown>);
+        continue;
+      }
+      if (prevVal === undefined || isBlankValue(prevVal)) {
+        if (!isBlankValue(nextVal)) out[key] = nextVal;
+        continue;
+      }
+    }
+    return out;
+  };
+
   const mergeWrapper = (wrapper: Record<string, unknown>): unknown => {
     const output = wrapper.output;
     if (!isRecord(output)) return output ?? null;
@@ -508,9 +636,24 @@ const extractWebhookOutput = (data: unknown): unknown => {
   };
 
   if (Array.isArray(data)) {
-    const first = data[0];
-    if (isRecord(first)) return mergeWrapper(first);
-    return null;
+    let mergedRecord: Record<string, unknown> | null = null;
+    let fallback: unknown = null;
+
+    for (const item of data) {
+      if (!item) continue;
+      if (isRecord(item)) {
+        const extracted = mergeWrapper(item);
+        if (isRecord(extracted)) {
+          mergedRecord = mergedRecord ? mergeNonBlank(mergedRecord, extracted as Record<string, unknown>) : (extracted as Record<string, unknown>);
+        } else if (!fallback && extracted) {
+          fallback = extracted;
+        }
+      } else if (!fallback) {
+        fallback = item;
+      }
+    }
+
+    return mergedRecord ?? fallback;
   }
   if (isRecord(data)) return mergeWrapper(data);
   return null;
@@ -628,10 +771,15 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
   }, [showCheckout]);
   const [draftDocCount, setDraftDocCount] = useState<number | null>(null);
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
-  const [disclosuresAccepted, setDisclosuresAccepted] = useState({
-    timelines: false,
-    payments: false,
-    inTransit: false,
+  const [vehicleCondition, setVehicleCondition] = useState<'runs_and_drives' | 'does_not_run_or_drive'>(
+    'runs_and_drives'
+  );
+  const [checkoutConfirmations, setCheckoutConfirmations] = useState({
+    pickupAddress: false,
+    dropoffAddress: false,
+    vehicleDetails: false,
+    vehicleRunsAndDrives: false,
+    vehicleDoesNotRunOrDrive: false,
   });
   const [submitMessage, setSubmitMessage] = useState<string | null>(() => {
     if (!persistState) return null;
@@ -1102,15 +1250,21 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
 
   useEffect(() => {
     const pickupAddress = String(formData?.pickup_location?.address ?? '').trim();
-    if (!pickupAddress) return;
+    if (!pickupAddress) {
+      setDealershipCoords(null);
+      return;
+    }
 
     const timer = window.setTimeout(async () => {
       try {
         const result = await geocodeAddress(pickupAddress);
-        if (!result) return;
+        if (!result) {
+          setDealershipCoords(null);
+          return;
+        }
         setDealershipCoords(result);
       } catch {
-        // ignore
+        setDealershipCoords(null);
       }
     }, 500);
 
@@ -1278,6 +1432,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       (outputObj as Record<string, unknown>).extracted_text,
       (outputObj as Record<string, unknown>).extractedText
     );
+    const rawExtractedTextAll = rawExtractedText || collectTextFromUnknown(outputObj);
 
     const serviceObj = isRecord(output.service) ? output.service : null;
     const transactionObj = isRecord(output.transaction) ? output.transaction : null;
@@ -1386,7 +1541,12 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       getOfficialCityPriceForServiceArea(String(extractedDropoffCity ?? '').trim())?.city ??
       '';
 
-    const vehicleVin = pickFirstString(vehicleObj?.vin, getLooseValue(outputObj, 'vin'));
+    const vehicleVin =
+      pickFirstString(
+        vehicleObj?.vin,
+        getLooseValue(vehicleObj, 'vin', 'vehicle_vin', 'vehiclevin', 'vin_number', 'vinnumber'),
+        getLooseValue(outputObj, 'vin', 'vehicle_vin', 'vehiclevin', 'vin_number', 'vinnumber')
+      ) || extractVinFromText(rawExtractedTextAll);
     const vehicleYear =
       normalizeVehicleYear(
         pickFirstString(
@@ -1579,13 +1739,20 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       sellingPhone
     );
 
-    const transactionId = pickFirstString(transactionObj?.transaction_id, getLooseValue(outputObj, 'transaction_id', 'transactionid', 'transaction', 'transaction_number', 'transactionnumber'));
-    const releaseFormNumber = pickFirstString(
-      transactionObj?.release_form_number,
-      getLooseValue(outputObj, 'release_form_number', 'releaseformnumber', 'release_form', 'releaseform', 'release_form_no', 'releaseformno')
-    );
+    const transactionId =
+      pickFirstString(
+        transactionObj?.transaction_id,
+        getLooseValue(outputObj, 'transaction_id', 'transactionid', 'transaction', 'transaction_number', 'transactionnumber')
+      ) || extractTransactionIdFromText(rawExtractedText);
+    const releaseFormNumber =
+      pickFirstString(
+        transactionObj?.release_form_number,
+        getLooseValue(outputObj, 'release_form_number', 'releaseformnumber', 'release_form', 'releaseform', 'release_form_no', 'releaseformno')
+      ) || extractReleaseFormNumberFromText(rawExtractedText);
     const releaseDate = pickFirstString(transactionObj?.release_date, getLooseValue(outputObj, 'release_date', 'releasedate'));
-    const arrivalDate = pickFirstString(transactionObj?.arrival_date, getLooseValue(outputObj, 'arrival_date', 'arrivaldate'));
+    const arrivalDate =
+      pickFirstString(transactionObj?.arrival_date, getLooseValue(outputObj, 'arrival_date', 'arrivaldate')) ||
+      extractArrivalDateFromText(rawExtractedText);
 
     const releasedByName = pickFirstString(authObj?.released_by_name, getLooseValue(outputObj, 'released_by_name', 'releasedbyname', 'releasedby'));
     const releasedToName = pickFirstString(authObj?.released_to_name, getLooseValue(outputObj, 'released_to_name', 'releasedtoname', 'releasedto'));
@@ -2323,7 +2490,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       id: Math.random().toString(36).substr(2, 9),
       name: file.name,
       size: formatFileSize(file.size),
-      type: file.type || 'unknown',
+      type: normalizeMimeType(file.name, file.type),
       file,
       docType: 'unknown',
     }));
@@ -2617,7 +2784,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
         try {
           const filePayload = {
             name: f.name,
-            type: f.type,
+            type: normalizeMimeType(f.name, f.type),
             size: f.file.size,
             base64: await fileToBase64(f.file),
           };
@@ -2781,18 +2948,37 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       return;
     }
 
+    setVehicleCondition('runs_and_drives');
+    setCheckoutConfirmations({
+      pickupAddress: false,
+      dropoffAddress: false,
+      vehicleDetails: false,
+      vehicleRunsAndDrives: false,
+      vehicleDoesNotRunOrDrive: false,
+    });
     setShowCheckout(true);
   };
 
   const handlePayNow = async () => {
     if (!formData) return;
 
-    const accepted = disclosuresAccepted.timelines && disclosuresAccepted.payments && disclosuresAccepted.inTransit;
-    if (!accepted) {
-      setSubmitMessage('Please accept all disclosures to continue.');
+    const baseAccepted =
+      checkoutConfirmations.pickupAddress &&
+      checkoutConfirmations.dropoffAddress &&
+      checkoutConfirmations.vehicleDetails;
+
+    const vehicleAccepted =
+      vehicleCondition === 'runs_and_drives'
+        ? checkoutConfirmations.vehicleRunsAndDrives
+        : checkoutConfirmations.vehicleDoesNotRunOrDrive;
+
+    if (!(baseAccepted && vehicleAccepted)) {
+      setSubmitMessage('Please complete all required confirmations to continue.');
       setSubmitError(true);
       return;
     }
+
+    const loadingFee = vehicleCondition === 'does_not_run_or_drive' ? 50 : 0;
 
     if (!isLoggedIn) {
       setSubmitMessage('Please log in with Google to continue.');
@@ -2827,7 +3013,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
         ? await Promise.all(
             uploadedFiles.map(async (f) => ({
               name: f.name,
-              type: f.type,
+              type: normalizeMimeType(f.name, f.type),
               size: f.file.size,
               base64: await fileToBase64(f.file),
               docType: f.docType,
@@ -2851,6 +3037,8 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
             formData: {
               ...formData,
               costEstimate: costData,
+              vehicle_condition: vehicleCondition,
+              vehicle_loading_fee: loadingFee,
             },
           }),
         });
@@ -2887,14 +3075,20 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
         lines.push(`Account: ${userLabel}`);
         lines.push('');
         if (costData) {
+          const loadingFee = vehicleCondition === 'does_not_run_or_drive' ? 50 : 0;
+          const subtotalBeforeTax = Number(costData.cost ?? 0) + loadingFee;
           lines.push(`Distance: ${costData.distance} km`);
           if (costData.pricingCity && costData.pricingStatus === 'official') {
             lines.push(`City: ${costData.pricingCity}`);
-            lines.push(`Price (before tax): $${costData.cost}`);
+            lines.push(`Price (before tax): $${subtotalBeforeTax}`);
             lines.push('Note: + applicable tax.');
           } else {
-            lines.push(`Price (before tax): $${costData.cost}`);
+            lines.push(`Price (before tax): $${subtotalBeforeTax}`);
             lines.push('Note: + applicable tax.');
+          }
+          if (loadingFee) {
+            lines.push(`Loading fee: $${loadingFee}`);
+            lines.push('Note: A customer service representative will contact you within 24 hours to reconfirm vehicle condition and pickup details.');
           }
           lines.push(`Estimated delivery time: ${fulfillment}`);
           lines.push('');
@@ -2920,7 +3114,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       const normalizedReceipt = String(finalReceiptText).replace(/\r\n/g, '\n').trim();
 
       const routeArea = String(costData?.pricingCity ?? formData?.dropoff_location?.service_area ?? formData?.pickup_location?.city ?? '').trim();
-      const subtotal = Number(costData?.cost ?? 0);
+      const subtotal = Number(costData?.cost ?? 0) + loadingFee;
       const totals = computeTotals(subtotal, routeArea);
       const orderCode = makeLocalOrderId();
       const isLocalDev = import.meta.env.DEV && window.location.hostname === 'localhost';
@@ -2945,7 +3139,12 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
           fulfillment_days_max: fulfillment.days_max,
           totals,
           customer: { name: user.name, email: user.email },
-          form_data: { ...formData, costEstimate: costData },
+          form_data: {
+            ...formData,
+            costEstimate: costData,
+            vehicle_condition: vehicleCondition,
+            vehicle_loading_fee: loadingFee,
+          },
           documents: uploadedFiles.map((f) => ({
             id: f.id,
             name: f.name,
@@ -2992,6 +3191,12 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
         vehicle_type: 'standard',
         price_before_tax: totals.subtotal,
         currency: 'CAD',
+        form_data: {
+          ...formData,
+          costEstimate: costData,
+          vehicle_condition: vehicleCondition,
+          vehicle_loading_fee: loadingFee,
+        },
       });
 
       const token = await getAccessToken();
@@ -3195,7 +3400,8 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
 
               {(() => {
                 const routeArea = String(costData?.pricingCity ?? formData?.dropoff_location?.service_area ?? formData?.pickup_location?.city ?? '').trim();
-                const subtotal = Number(costData?.cost ?? 0);
+                const loadingFee = vehicleCondition === 'does_not_run_or_drive' ? 50 : 0;
+                const subtotal = Number(costData?.cost ?? 0) + loadingFee;
                 const totals = computeTotals(subtotal, routeArea);
                 return (
                   <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
@@ -3204,6 +3410,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
                       <div className="rounded-lg bg-white border border-gray-200 p-3">
                         <div className="text-xs text-gray-500">Subtotal (before tax)</div>
                         <div className="mt-1 font-semibold text-gray-900">${totals.subtotal.toFixed(2)}</div>
+                        {loadingFee ? <div className="mt-1 text-xs text-gray-600">Includes $50.00 loading fee</div> : null}
                       </div>
                       <div className="rounded-lg bg-white border border-gray-200 p-3">
                         <div className="text-xs text-gray-500">Tax {totals.tax_note ? `(${totals.tax_note})` : ''}</div>
@@ -3220,55 +3427,135 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
                 );
               })()}
 
-              <div className="space-y-3">
-                <div className="text-sm font-semibold text-gray-900">Disclosures (required)</div>
+              <div className="rounded-xl border border-gray-200 bg-white p-4">
+                <div className="text-sm font-semibold text-gray-900">Vehicle condition</div>
+                <div className="mt-1 text-sm text-gray-600">Select the current condition of the vehicle at pickup.</div>
+                <select
+                  value={vehicleCondition}
+                  onChange={(e) => {
+                    const next = String(e.target.value) === 'does_not_run_or_drive' ? 'does_not_run_or_drive' : 'runs_and_drives';
+                    setVehicleCondition(next);
+                    setCheckoutConfirmations((prev) => ({
+                      ...prev,
+                      vehicleRunsAndDrives: false,
+                      vehicleDoesNotRunOrDrive: false,
+                    }));
+                  }}
+                  className="mt-3 w-full rounded-xl border border-gray-300 bg-white px-3 py-2.5 text-sm"
+                >
+                  <option value="runs_and_drives">Runs and drives</option>
+                  <option value="does_not_run_or_drive">Does not run or drive</option>
+                </select>
 
-                <label className="flex items-start gap-3 rounded-xl border border-gray-200 bg-white p-4">
-                  <input
-                    type="checkbox"
-                    checked={disclosuresAccepted.timelines}
-                    onChange={(e) =>
-                      setDisclosuresAccepted((prev) => ({
-                        ...prev,
-                        timelines: e.target.checked,
-                      }))
-                    }
-                    className="mt-1 h-4 w-4"
-                  />
-                  <div className="text-sm text-gray-700">
-                    Timelines are estimates (weather, routing, and scheduling may affect delivery).
+                {vehicleCondition === 'does_not_run_or_drive' ? (
+                  <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-4">
+                    <div className="text-sm font-semibold text-amber-900">Additional loading fee</div>
+                    <div className="mt-1 text-sm text-amber-900">
+                      An additional loading fee of 50 is required for vehicles that do not run or drive. This fee has been added to your total.
+                    </div>
+                    <div className="mt-2 text-sm text-amber-900">
+                      A customer service representative will contact you within 24 hours to reconfirm vehicle condition and pickup details before scheduling transportation.
+                    </div>
                   </div>
+                ) : null}
+              </div>
+
+              <div className="space-y-3">
+                <div className="text-sm font-semibold text-gray-900">Checkout vehicle condition confirmation</div>
+
+                <label className="flex items-start gap-3 rounded-xl border border-gray-200 bg-white p-4">
+                  <input
+                    type="checkbox"
+                    checked={checkoutConfirmations.pickupAddress}
+                    onChange={(e) =>
+                      setCheckoutConfirmations((prev) => ({
+                        ...prev,
+                        pickupAddress: e.target.checked,
+                      }))
+                    }
+                    className="mt-1 h-4 w-4"
+                  />
+                  <div className="text-sm text-gray-700">I confirm the pickup address is correct and accessible.</div>
                 </label>
 
                 <label className="flex items-start gap-3 rounded-xl border border-gray-200 bg-white p-4">
                   <input
                     type="checkbox"
-                    checked={disclosuresAccepted.payments}
+                    checked={checkoutConfirmations.dropoffAddress}
                     onChange={(e) =>
-                      setDisclosuresAccepted((prev) => ({
+                      setCheckoutConfirmations((prev) => ({
                         ...prev,
-                        payments: e.target.checked,
+                        dropoffAddress: e.target.checked,
                       }))
                     }
                     className="mt-1 h-4 w-4"
                   />
-                  <div className="text-sm text-gray-700">Customers remain responsible for vehicle payments during transit.</div>
+                  <div className="text-sm text-gray-700">I confirm the drop off address is correct.</div>
                 </label>
 
                 <label className="flex items-start gap-3 rounded-xl border border-gray-200 bg-white p-4">
                   <input
                     type="checkbox"
-                    checked={disclosuresAccepted.inTransit}
+                    checked={checkoutConfirmations.vehicleDetails}
                     onChange={(e) =>
-                      setDisclosuresAccepted((prev) => ({
+                      setCheckoutConfirmations((prev) => ({
                         ...prev,
-                        inTransit: e.target.checked,
+                        vehicleDetails: e.target.checked,
                       }))
                     }
                     className="mt-1 h-4 w-4"
                   />
-                  <div className="text-sm text-gray-700">Once picked up, the vehicle is considered “in transit.”</div>
+                  <div className="text-sm text-gray-700">I confirm the vehicle year make model and details are accurate.</div>
                 </label>
+
+                {vehicleCondition === 'runs_and_drives' ? (
+                  <label className="flex items-start gap-3 rounded-xl border border-gray-200 bg-white p-4">
+                    <input
+                      type="checkbox"
+                      checked={checkoutConfirmations.vehicleRunsAndDrives}
+                      onChange={(e) =>
+                        setCheckoutConfirmations((prev) => ({
+                          ...prev,
+                          vehicleRunsAndDrives: e.target.checked,
+                        }))
+                      }
+                      className="mt-1 h-4 w-4"
+                    />
+                    <div className="text-sm text-gray-700">
+                      <div className="font-medium">
+                        By checking this box, you confirm and acknowledge that the vehicle runs and drives and is available at the provided pickup address.
+                      </div>
+                      <div className="mt-2">
+                        You understand that failure to disclose vehicle condition or vehicle unavailability will result in a dry run and the full transportation fee will apply.
+                        Repeated or related incidents may result in termination of future services.
+                      </div>
+                    </div>
+                  </label>
+                ) : (
+                  <label className="flex items-start gap-3 rounded-xl border border-gray-200 bg-white p-4">
+                    <input
+                      type="checkbox"
+                      checked={checkoutConfirmations.vehicleDoesNotRunOrDrive}
+                      onChange={(e) =>
+                        setCheckoutConfirmations((prev) => ({
+                          ...prev,
+                          vehicleDoesNotRunOrDrive: e.target.checked,
+                        }))
+                      }
+                      className="mt-1 h-4 w-4"
+                    />
+                    <div className="text-sm text-gray-700">
+                      I confirm the vehicle does not run or drive and understand an additional 50 loading fee will be added to the order.
+                    </div>
+                  </label>
+                )}
+
+                <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+                  <div className="text-sm font-semibold text-gray-900">Dry run disclosure</div>
+                  <div className="mt-1 text-sm text-gray-700">
+                    If the driver arrives and the vehicle cannot be moved or is not present at the pickup address, the order will be treated as a dry run and the full transportation cost will apply.
+                  </div>
+                </div>
               </div>
 
               {submitMessage ? (
@@ -3294,7 +3581,17 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
                     </button>
                     <button
                       type="button"
-                      disabled={isSubmitting}
+                      disabled={(() => {
+                        const baseAccepted =
+                          checkoutConfirmations.pickupAddress &&
+                          checkoutConfirmations.dropoffAddress &&
+                          checkoutConfirmations.vehicleDetails;
+                        const vehicleAccepted =
+                          vehicleCondition === 'runs_and_drives'
+                            ? checkoutConfirmations.vehicleRunsAndDrives
+                            : checkoutConfirmations.vehicleDoesNotRunOrDrive;
+                        return isSubmitting || !(baseAccepted && vehicleAccepted);
+                      })()}
                       onClick={async () => {
                         await handlePayNow();
                       }}
