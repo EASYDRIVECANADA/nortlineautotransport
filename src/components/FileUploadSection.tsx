@@ -564,13 +564,22 @@ const extractVinFromText = (text: string): string => {
   const raw = String(text ?? '').toUpperCase();
   if (!raw) return '';
 
+  const isValidVinCandidate = (candidate: string): boolean => {
+    const vin = String(candidate ?? '').trim();
+    if (!vin) return false;
+    if (!/^[A-HJ-NPR-Z0-9]{17}$/.test(vin)) return false;
+    if (!/[0-9]/.test(vin)) return false;
+    return true;
+  };
+
   const direct = raw.match(/\b[A-HJ-NPR-Z0-9]{17}\b/g) ?? [];
-  if (direct[0]) return direct[0];
+  const directValid = direct.find((c) => isValidVinCandidate(c));
+  if (directValid) return directValid;
 
   const looseMatches = raw.match(/(?:[A-HJ-NPR-Z0-9][\s\-]*){17}/g) ?? [];
   for (const match of looseMatches) {
     const compact = match.replace(/[^A-HJ-NPR-Z0-9]/g, '');
-    if (compact.length === 17 && /^[A-HJ-NPR-Z0-9]{17}$/.test(compact)) return compact;
+    if (isValidVinCandidate(compact)) return compact;
   }
 
   return '';
