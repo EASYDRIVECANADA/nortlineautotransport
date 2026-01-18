@@ -317,7 +317,7 @@ export default function ChatBot() {
         "To get a quote, just follow these quick steps:",
         "",
         "1) Choose Pickup (one-way) or Delivery (one-way)",
-        "2) Select your Route / Service Area (destination)",
+        "2) Enter the Pickup and Drop-off addresses (Street Address autocomplete)",
         "3) Upload your release form (or use manual entry)",
         "",
         "You’ll see instant pricing, and you can complete booking online in minutes.",
@@ -328,16 +328,16 @@ export default function ChatBot() {
       return [
         "We offer one-way vehicle pickup or delivery from Ottawa, with dealer-focused routes across Ontario and Quebec.",
         "",
-        "To see available routes, use the Route / Service Area dropdown in the quote form.",
-        "If you don’t see the city you need, tell me the pickup and drop-off locations and I’ll help you with the next best option.",
+        "To get pricing, enter both the pickup and drop-off addresses in the quote form.",
+        "If you tell me your pickup and drop-off cities, I can help you estimate the best option.",
       ].join('\n');
     }
 
     if (/(pickup|pick up)/.test(input) && !/(pick up address|pickup address|pickup location|where is pickup address)/.test(input)) {
       return [
-        "Pickup (one-way) means we pick up the vehicle from the selected Route / Service Area and bring it to Ottawa.",
+        "Pickup (one-way) means we pick up the vehicle from your pickup address and bring it to Ottawa.",
         "",
-        "Delivery (one-way) means we pick up in Ottawa and deliver to the selected Route / Service Area.",
+        "Delivery (one-way) means we pick up in Ottawa and deliver to your drop-off address.",
         "",
         "If you tell me the city and whether you want pickup or delivery, I can guide you through the quote form.",
       ].join('\n');
@@ -345,9 +345,9 @@ export default function ChatBot() {
 
     if (/(delivery|deliver)/.test(input) && !/(delivery address|drop off|dropoff|drop off address|dropoff address)/.test(input)) {
       return [
-        "Delivery (one-way) means we pick up in Ottawa and deliver to the selected Route / Service Area.",
+        "Delivery (one-way) means we pick up in Ottawa and deliver to your drop-off address.",
         "",
-        "Pickup (one-way) means we pick up the vehicle from the selected Route / Service Area and bring it to Ottawa.",
+        "Pickup (one-way) means we pick up the vehicle from your pickup address and bring it to Ottawa.",
         "",
         "If you share the city you’re delivering to, I can help you get instant pricing.",
       ].join('\n');
@@ -359,7 +359,7 @@ export default function ChatBot() {
         "",
         "Booking is online with instant pricing, and transport is scheduled after payment confirmation.",
         "",
-        "If you tell me pickup vs delivery and the Route / Service Area, I can help you get a quote right away.",
+        "If you tell me pickup vs delivery and your pickup + drop-off cities, I can help you get a quote right away.",
       ].join('\n');
     }
 

@@ -68,6 +68,17 @@ const clearDraft = () => {
 export default function OrderWizard({ onBack, onGoToOrders }: OrderWizardProps) {
   const isLocalDev = import.meta.env.DEV && window.location.hostname === 'localhost';
 
+  const extractionUrl = (() => {
+    const envUrl = String(import.meta.env.VITE_EXTRACTION_URL ?? '').trim();
+    if (envUrl) return envUrl;
+    const fnPath = '/.netlify/functions/extract-documents';
+    if (import.meta.env.DEV) {
+      const isNetlifyDev = String(window.location.port ?? '') === '8888';
+      return isNetlifyDev ? fnPath : `http://localhost:8888${fnPath}`;
+    }
+    return fnPath;
+  })();
+
   const [step, setStep] = useState<WizardStep>(() => loadDraft()?.step ?? 'quote');
   const [serviceType, setServiceType] = useState<ServiceType>(() => loadDraft()?.serviceType ?? 'pickup_one_way');
   const [vehicleType] = useState<VehicleType>('standard');
@@ -154,7 +165,7 @@ export default function OrderWizard({ onBack, onGoToOrders }: OrderWizardProps) 
 
     try {
       const base64 = await fileToBase64(extractFile);
-      const res = await fetch('https://primary-production-6722.up.railway.app/webhook/upload', {
+      const res = await fetch(extractionUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -246,7 +257,7 @@ export default function OrderWizard({ onBack, onGoToOrders }: OrderWizardProps) 
 
     if (step === 'quote') {
       if (!routeArea.trim()) {
-        setError('Please select a route / service area to continue.');
+        setError('Please select a destination (pricing city) to continue.');
         return;
       }
       setStep('info');
@@ -477,13 +488,13 @@ export default function OrderWizard({ onBack, onGoToOrders }: OrderWizardProps) 
                   </div>
 
                   <div>
-                    <div className="text-xs font-medium text-gray-600 mb-2">Route / service area</div>
+                    <div className="text-xs font-medium text-gray-600 mb-2">Destination (pricing city)</div>
                     <select
                       value={routeArea}
                       onChange={(e) => setRouteArea(e.target.value)}
                       className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm"
                     >
-                      <option value="">Select a route</option>
+                      <option value="">Select a destination</option>
                       {routeOptions.map((r) => (
                         <option key={r} value={r}>
                           {r}
@@ -623,7 +634,7 @@ export default function OrderWizard({ onBack, onGoToOrders }: OrderWizardProps) 
                 <div className="rounded-2xl border border-gray-200 bg-white overflow-hidden">
                   <div className="p-4 border-b border-gray-100">
                     <div className="text-sm font-semibold text-gray-900">Extract & Autofill (optional)</div>
-                    <div className="text-xs text-gray-600">Upload a document to auto-fill addresses and route.</div>
+                    <div className="text-xs text-gray-600">Upload a document to auto-fill addresses and destination.</div>
                   </div>
                   <div className="p-4 space-y-3">
                     <input
@@ -819,7 +830,7 @@ export default function OrderWizard({ onBack, onGoToOrders }: OrderWizardProps) 
                   <div className="text-sm font-semibold text-gray-900">Summary</div>
                   <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
                     <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
-                      <div className="text-xs text-gray-500">Route / Area</div>
+                      <div className="text-xs text-gray-500">Destination (pricing city)</div>
                       <div className="mt-1 font-semibold text-gray-900">{routeArea || '-'}</div>
                     </div>
                     <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">

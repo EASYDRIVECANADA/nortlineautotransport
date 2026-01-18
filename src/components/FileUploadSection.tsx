@@ -7,8 +7,6 @@ import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
 import markerIcon from 'leaflet/dist/images/marker-icon.png';
 import markerShadow from 'leaflet/dist/images/marker-shadow.png';
 import {
-  SERVICE_AREAS,
-  SERVICE_AREA_GEOCODE_QUERY,
   getFulfillmentDaysForRoute,
   getOfficialCityPriceForAddress,
   getOfficialCityPriceForServiceArea,
@@ -34,12 +32,12 @@ interface FileUploadSectionProps {
   persistState?: boolean;
 }
 
-const sanitizeDigits = (v: string) => v.replace(/[^0-9]/g, '');
-const sanitizeDigitsDash = (v: string) => v.replace(/[^0-9-]/g, '');
-const sanitizePhone = (v: string) => v.replace(/[^0-9+()\-\s]/g, '');
-const sanitizeDateLike = (v: string) => v.replace(/[^0-9/-]/g, '');
-const sanitizeNoDigits = (v: string) => v.replace(/[0-9]/g, '');
-const sanitizeLettersSpaces = (v: string) => v.replace(/[^a-zA-Z\s'.-]/g, '');
+const sanitizeDigits = (v: string) => String(v ?? '').replace(/[^0-9]/g, '');
+const sanitizeDigitsDash = (v: string) => String(v ?? '').replace(/[^0-9-]/g, '');
+const sanitizePhone = (v: string) => String(v ?? '').replace(/[^0-9+()\-\s]/g, '');
+const sanitizeDateLike = (v: string) => String(v ?? '').replace(/[^0-9/-]/g, '');
+const sanitizeNoDigits = (v: string) => String(v ?? '').replace(/[0-9]/g, '');
+const sanitizeLettersSpaces = (v: string) => String(v ?? '').replace(/[^a-zA-Z\s'.-]/g, '');
 
 const DRAFT_FILES_DB = 'ed_draft_files_db';
 const DRAFT_FILES_STORE = 'draft_files';
@@ -127,6 +125,8 @@ const deleteDraftFiles = async (draftId: string): Promise<void> => {
 type AddressBreakdown = {
   street: string;
   number: string;
+  unit: string;
+  area: string;
   city: string;
   province: string;
   postal_code: string;
@@ -141,16 +141,32 @@ function formatFileSize(bytes: number): string {
   return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
 }
 
+const makeDraftFileKey = (file: File) => `${file.name}::${file.type}::${file.size}::${file.lastModified}`;
+
 const emptyAddressBreakdown = (): AddressBreakdown => ({
   street: '',
   number: '',
+  unit: '',
+  area: '',
   city: '',
   province: '',
   postal_code: '',
   country: 'Canada',
 });
 
-const normalizeWhitespace = (value: string) => value.replace(/\s+/g, ' ').trim();
+const defaultAddressBreakdown = (): AddressBreakdown => ({
+  ...emptyAddressBreakdown(),
+  city: 'Ottawa',
+  province: 'ON',
+  country: 'Canada',
+});
+
+const normalizeWhitespace = (value: string) => String(value ?? '').replace(/\s+/g, ' ').trim();
+
+const stripDiacritics = (value: string) =>
+  String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
 
 const looksLikeStreetAddress = (value: string) => /\d/.test(String(value ?? ''));
 
@@ -158,12 +174,34 @@ const normalizePostalCode = (value: string) => {
   const raw = normalizeWhitespace(String(value ?? '').toUpperCase());
   if (!raw) return '';
   const compact = raw.replace(/[^A-Z0-9]/g, '');
-  if (compact.length === 6) return `${compact.slice(0, 3)} ${compact.slice(3)}`;
+  if (compact.length === 6) {
+    const chars = compact.split('');
+    const toDigit = (c: string) => (c === 'I' ? '1' : c === 'O' || c === 'Q' ? '0' : c);
+    const toLetter = (c: string) => (c === '1' ? 'I' : c === '0' ? 'O' : c);
+    if (chars[1]) chars[1] = toDigit(chars[1]);
+    if (chars[3]) chars[3] = toDigit(chars[3]);
+    if (chars[5]) chars[5] = toDigit(chars[5]);
+    if (chars[0]) chars[0] = toLetter(chars[0]);
+    if (chars[2]) chars[2] = toLetter(chars[2]);
+    if (chars[4]) chars[4] = toLetter(chars[4]);
+    const repaired = chars.join('');
+    return `${repaired.slice(0, 3)} ${repaired.slice(3)}`;
+  }
   return raw;
+};
+
+const repairStreetNameOcr = (street: string) => {
+  const raw = normalizeWhitespace(String(street ?? ''));
+  if (!raw) return '';
+  return raw
+    .replace(/\b(?:loe|l0e|i0e)\b(?=\s+(?:avenue|ave\.?|av\.?)\b)/i, '10e')
+    .replace(/\b10E\b(?=\s+(?:avenue|ave\.?|av\.?)\b)/i, '10e');
 };
 
 const buildAddressFromBreakdown = (b: AddressBreakdown) => {
   const line1 = normalizeWhitespace(`${b.number} ${b.street}`.trim());
+  const unit = normalizeWhitespace(b.unit);
+  const area = normalizeWhitespace(b.area);
   const city = normalizeWhitespace(b.city);
   const prov = normalizeWhitespace(b.province);
   const postal = normalizePostalCode(b.postal_code);
@@ -171,6 +209,8 @@ const buildAddressFromBreakdown = (b: AddressBreakdown) => {
 
   const parts: string[] = [];
   if (line1) parts.push(line1);
+  if (unit) parts.push(unit);
+  if (area) parts.push(area);
   if (city) parts.push(city);
   const provPostal = normalizeWhitespace(`${prov} ${postal}`.trim());
   if (provPostal) parts.push(provPostal);
@@ -178,43 +218,171 @@ const buildAddressFromBreakdown = (b: AddressBreakdown) => {
   return parts.join(', ');
 };
 
+const splitLine1ToNumberStreet = (line1: string): { number: string; street: string } => {
+  const raw = String(line1 ?? '');
+  if (!raw.trim()) return { number: '', street: '' };
+
+  const numberOnly = raw.match(/^\s*(\d{1,6}[A-Za-z]?)\s*$/);
+  if (numberOnly?.[1]) return { number: String(numberOnly[1]).trim(), street: '' };
+
+  const s = normalizeWhitespace(raw);
+  if (!s) return { number: '', street: '' };
+  const m = s.match(/^\s*(\d{1,6}[A-Za-z]?)\s+(.+)$/);
+  if (m?.[1] && m?.[2]) return { number: String(m[1]).trim(), street: String(m[2]).trim() };
+  return { number: '', street: s };
+};
+
+const isValidCanadianPostalCode = (value: string) => {
+  const postal = normalizePostalCode(value);
+  const compact = postal.replace(/[^A-Z0-9]/g, '');
+  return /^[A-Z]\d[A-Z]\d[A-Z]\d$/.test(compact);
+};
+
+const postalPrefixAllowsProvince = (postal: string, province: string) => {
+  const compact = normalizePostalCode(postal).replace(/[^A-Z0-9]/g, '');
+  const first = compact.slice(0, 1).toUpperCase();
+  const prov = String(province ?? '').trim().toUpperCase();
+  if (!first || !prov) return true;
+
+  const map: Record<string, string[]> = {
+    AB: ['T'],
+    BC: ['V'],
+    MB: ['R'],
+    NB: ['E'],
+    NL: ['A'],
+    NS: ['B'],
+    NT: ['X'],
+    NU: ['X'],
+    ON: ['K', 'L', 'M', 'N', 'P'],
+    PE: ['C'],
+    QC: ['G', 'H', 'J'],
+    SK: ['S'],
+    YT: ['Y'],
+  };
+
+  const allowed = map[prov];
+  if (!allowed) return true;
+  return allowed.includes(first);
+};
+
+const CANADA_PROVINCE_OPTIONS = ['AB', 'BC', 'MB', 'NB', 'NL', 'NS', 'NT', 'NU', 'ON', 'PE', 'QC', 'SK', 'YT'] as const;
+
+const CANADA_PROVINCE_FULL_NAME: Record<string, string> = {
+  AB: 'Alberta',
+  BC: 'British Columbia',
+  MB: 'Manitoba',
+  NB: 'New Brunswick',
+  NL: 'Newfoundland and Labrador',
+  NS: 'Nova Scotia',
+  NT: 'Northwest Territories',
+  NU: 'Nunavut',
+  ON: 'Ontario',
+  PE: 'Prince Edward Island',
+  QC: 'Quebec',
+  SK: 'Saskatchewan',
+  YT: 'Yukon',
+};
+
+const PROVINCE_NAME_TO_CODE: Record<string, string> = {
+  ALBERTA: 'AB',
+  BRITISHCOLUMBIA: 'BC',
+  MANITOBA: 'MB',
+  NEWBRUNSWICK: 'NB',
+  NEWFOUNDLANDANDLABRADOR: 'NL',
+  NOVASCOTIA: 'NS',
+  NORTHWESTTERRITORIES: 'NT',
+  NUNAVUT: 'NU',
+  ONTARIO: 'ON',
+  PRINCEEDWARDISLAND: 'PE',
+  QUEBEC: 'QC',
+  SASKATCHEWAN: 'SK',
+  YUKON: 'YT',
+};
+
 const normalizeCountry = (value: string) => {
   const raw = normalizeWhitespace(String(value ?? ''));
   if (!raw) return '';
   const upper = raw.toUpperCase();
-  if (upper === 'CA' || upper === 'CAN' || upper === 'CANADA') return 'Canada';
-  if (upper === 'US' || upper === 'USA' || upper === 'UNITED STATES' || upper === 'UNITED STATES OF AMERICA') return 'USA';
+  const lettersOnly = upper.replace(/[^A-Z]/g, '');
+  if (lettersOnly === 'CA' || lettersOnly === 'CAN' || lettersOnly === 'CANADA') return 'Canada';
+  if (lettersOnly === 'US' || lettersOnly === 'USA' || lettersOnly === 'UNITEDSTATES' || lettersOnly === 'UNITEDSTATESOFAMERICA') return 'USA';
   return raw;
 };
 
 const CAN_PROVINCE_CODES = new Set(['AB', 'BC', 'MB', 'NB', 'NL', 'NS', 'NT', 'NU', 'ON', 'PE', 'QC', 'SK', 'YT']);
 
+const normalizeProvinceCode = (value: string): string => {
+  const raw = normalizeWhitespace(String(value ?? ''));
+  if (!raw) return '';
+  const upper = raw.toUpperCase();
+  if (/^[A-Z]{2}$/.test(upper) && CAN_PROVINCE_CODES.has(upper)) return upper;
+  const key = upper.replace(/[^A-Z]/g, '');
+  return PROVINCE_NAME_TO_CODE[key] ?? '';
+};
+
+const inferProvinceFromPostal = (postal: string): string => {
+  const compact = normalizePostalCode(postal).replace(/[^A-Z0-9]/g, '');
+  const first = compact.slice(0, 1).toUpperCase();
+  if (!first) return '';
+  if (['T'].includes(first)) return 'AB';
+  if (['V'].includes(first)) return 'BC';
+  if (['R'].includes(first)) return 'MB';
+  if (['E'].includes(first)) return 'NB';
+  if (['A'].includes(first)) return 'NL';
+  if (['B'].includes(first)) return 'NS';
+  if (['X'].includes(first)) return 'NT';
+  if (['X'].includes(first)) return 'NU';
+  if (['K', 'L', 'M', 'N', 'P'].includes(first)) return 'ON';
+  if (['C'].includes(first)) return 'PE';
+  if (['G', 'H', 'J'].includes(first)) return 'QC';
+  if (['S'].includes(first)) return 'SK';
+  if (['Y'].includes(first)) return 'YT';
+  return '';
+};
+
 const extractProvincePostalFromLine = (line: string): { province: string; postal_code: string; remainder: string } => {
   const s = normalizeWhitespace(line);
   if (!s) return { province: '', postal_code: '', remainder: '' };
 
-  const postalMatch = s.match(/([A-Z]\d[A-Z])\s*([\d][A-Z]\d)/i);
-  const postal = postalMatch ? `${postalMatch[1].toUpperCase()} ${postalMatch[2].toUpperCase()}` : '';
-  const withoutPostal = normalizeWhitespace(s.replace(/([A-Z]\d[A-Z])\s*([\d][A-Z]\d)/i, '').trim());
+  const lineUpper = s.toUpperCase();
+  const compactCandidates = lineUpper.match(/\b[A-Z0-9]{3}\s*[A-Z0-9]{3}\b/g) ?? [];
+  let postal = '';
+  let withoutPostal = lineUpper;
+  for (const candidate of compactCandidates) {
+    const maybe = normalizePostalCode(candidate);
+    if (isValidCanadianPostalCode(maybe)) {
+      postal = maybe;
+      withoutPostal = normalizeWhitespace(withoutPostal.replace(candidate, '').trim());
+      break;
+    }
+  }
 
-  const tokens = withoutPostal.split(' ').filter(Boolean);
+  if (!postal) {
+    const postalMatch = lineUpper.match(/([A-Z0-9]\s*[A-Z0-9]\s*[A-Z0-9])\s*([A-Z0-9]\s*[A-Z0-9]\s*[A-Z0-9])/i);
+    const joined = postalMatch ? normalizePostalCode(`${postalMatch[1]}${postalMatch[2]}`) : '';
+    if (joined && isValidCanadianPostalCode(joined)) {
+      postal = joined;
+      withoutPostal = normalizeWhitespace(lineUpper.replace(postalMatch?.[0] ?? '', '').trim());
+    } else {
+      withoutPostal = normalizeWhitespace(lineUpper.trim());
+    }
+  }
+
+  let withoutCountryTokens = withoutPostal;
+  withoutCountryTokens = normalizeWhitespace(withoutCountryTokens.replace(/\bCA\.?\b/gi, '').replace(/\bUSA?\.?\b/gi, '').trim());
+
+  const tokens = withoutCountryTokens.split(' ').filter(Boolean);
   let province = '';
   let remainder = '';
 
   if (tokens.length) {
-    const last = String(tokens[tokens.length - 1] ?? '').toUpperCase();
-    if (CAN_PROVINCE_CODES.has(last)) {
-      province = last;
-      remainder = normalizeWhitespace(tokens.slice(0, -1).join(' '));
+    const found = tokens.find((t) => CAN_PROVINCE_CODES.has(String(t).toUpperCase()));
+    if (found) {
+      province = String(found).toUpperCase();
+      remainder = normalizeWhitespace(tokens.filter((t) => String(t).toUpperCase() !== province).join(' '));
     } else {
-      const first = String(tokens[0] ?? '').toUpperCase();
-      if (CAN_PROVINCE_CODES.has(first)) {
-        province = first;
-        remainder = normalizeWhitespace(tokens.slice(1).join(' '));
-      } else {
-        province = normalizeWhitespace(withoutPostal);
-        remainder = '';
-      }
+      province = '';
+      remainder = normalizeWhitespace(tokens.join(' '));
     }
   }
 
@@ -251,6 +419,13 @@ const parseAddressToBreakdown = (address: string): AddressBreakdown => {
     .map((p) => normalizeWhitespace(p))
     .filter(Boolean);
 
+  let unit = '';
+  const unitIdx = parts.findIndex((p) => /\b(?:apt|apartment|suite|unit)\b|#/.test(String(p).toLowerCase()));
+  if (unitIdx >= 0) {
+    unit = String(parts[unitIdx] ?? '').trim();
+    parts.splice(unitIdx, 1);
+  }
+
   let country = '';
   if (parts.length) {
     const last = parts[parts.length - 1] ?? '';
@@ -258,6 +433,19 @@ const parseAddressToBreakdown = (address: string): AddressBreakdown => {
     if (normalized === 'Canada' || normalized === 'USA') {
       country = normalized;
       parts.pop();
+    }
+  }
+
+  if (!country && parts.length) {
+    const last = parts[parts.length - 1] ?? '';
+    const trimmed = normalizeWhitespace(String(last).replace(/\bCA\.?\b/gi, '').replace(/\bUSA?\.?\b/gi, '').trim());
+    const hadCA = /\bCA\.?\b/i.test(last);
+    const hadUS = /\bUSA?\.?\b/i.test(last);
+    if (hadCA) country = 'Canada';
+    if (hadUS) country = 'USA';
+    if ((hadCA || hadUS) && trimmed !== last) {
+      if (trimmed) parts[parts.length - 1] = trimmed;
+      else parts.pop();
     }
   }
 
@@ -285,30 +473,81 @@ const parseAddressToBreakdown = (address: string): AddressBreakdown => {
     provPostal = '';
   }
 
+  // Handle OCR layouts like: "8670 10e Avenue, Montréal, QC, H1Z 3B8, CA"
+  // Where the province code is separated into its own comma part.
+  if (parts.length >= 3) {
+    const last = parts[parts.length - 1] ?? '';
+    const secondLast = parts[parts.length - 2] ?? '';
+    const thirdLast = parts[parts.length - 3] ?? '';
+    const maybeProv = normalizeProvinceCode(secondLast);
+    if (maybeProv && isValidCanadianPostalCode(last)) {
+      city = thirdLast;
+      provPostal = normalizeWhitespace(`${maybeProv} ${normalizePostalCode(last)}`.trim());
+    }
+  }
+
+  const bestLine1 = parts.find((p) => looksLikeStreetAddress(p)) ?? '';
+  if (bestLine1) {
+    line1 = bestLine1;
+    const idx = parts.indexOf(bestLine1);
+    if (idx >= 0) {
+      const next = parts[idx + 1] ?? '';
+      const nextExtract = extractProvincePostalFromLine(next);
+      if (next && (nextExtract.province || nextExtract.postal_code)) {
+        city = nextExtract.remainder;
+        provPostal = normalizeWhitespace(`${nextExtract.province} ${nextExtract.postal_code}`.trim());
+      }
+    }
+  }
+
   const provPostalExtracted = extractProvincePostalFromLine(provPostal);
   const postal = provPostalExtracted.postal_code;
   let province = provPostalExtracted.province;
   if (province && province.length === 2) province = province.toUpperCase();
 
+  if (!province && postal && country === 'Canada') {
+    province = inferProvinceFromPostal(postal);
+  }
+
   const line = normalizeWhitespace(line1);
   let number = '';
   let street = '';
-  const startsWithNumber = line.match(/^([0-9A-Z-]+)\s+(.*)$/i);
-  const endsWithNumber = line.match(/^(.*)\s+([0-9A-Z-]+)$/i);
+
+  if (!unit) {
+    const mUnit = line.match(/\b(?:apt|apartment|suite|unit)\b\s*#?\s*([A-Za-z0-9-]+)\b/i) || line.match(/\s#\s*([A-Za-z0-9-]+)\b/i);
+    if (mUnit?.[0]) {
+      unit = normalizeWhitespace(mUnit[0]);
+      line1 = normalizeWhitespace(line.replace(mUnit[0], '').trim());
+    }
+  }
+
+  const lineClean = normalizeWhitespace(line1);
+  const startsWithNumber = lineClean.match(/^([0-9A-Z-]+)\s+(.*)$/i);
+  const endsWithNumber = lineClean.match(/^(.*)\s+([0-9A-Z-]+)$/i);
   if (startsWithNumber && /^[0-9]/.test(startsWithNumber[1])) {
     number = startsWithNumber[1];
     street = startsWithNumber[2];
   } else if (endsWithNumber && /^[0-9]/.test(endsWithNumber[2])) {
     street = endsWithNumber[1];
     number = endsWithNumber[2];
+  } else if (/(\b\d{1,6}[A-Z-]*\b)/.test(lineClean)) {
+    const m = lineClean.match(/\b(\d{1,6}[A-Z-]*)\b\s+(.+)$/i);
+    if (m && m[1] && /^[0-9]/.test(m[1])) {
+      number = m[1];
+      street = m[2];
+    } else {
+      street = lineClean;
+    }
   } else {
-    street = line;
+    street = lineClean;
   }
 
   const normalized = normalizeProvinceCountry(province, country);
   return {
-    street: street,
+    street: repairStreetNameOcr(street),
     number: number,
+    unit: unit,
+    area: '',
     city: normalizeWhitespace(city || provPostalExtracted.remainder),
     province: normalized.province,
     postal_code: postal,
@@ -332,6 +571,7 @@ type CheckoutDraft = {
   docCount: number;
   draftSource?: 'bulk_upload' | 'manual';
   needsExtraction?: boolean;
+  uploadedFilesMeta?: Array<{ key: string; name: string; docType: UploadedFile['docType'] }>;
 };
 
 type CostData = {
@@ -372,6 +612,8 @@ type FormData = {
     address: string;
     street: string;
     number: string;
+    unit: string;
+    area: string;
     city: string;
     province: string;
     postal_code: string;
@@ -384,13 +626,14 @@ type FormData = {
     address: string;
     street: string;
     number: string;
+    unit: string;
+    area: string;
     city: string;
     province: string;
     postal_code: string;
     country: string;
     lat: string;
     lng: string;
-    service_area: string;
   };
   transaction: {
     transaction_id: string;
@@ -405,6 +648,7 @@ type FormData = {
   dealer_notes: string;
   costEstimate?: CostData | null;
   draft_source?: string;
+  pickup_locked?: boolean;
   transaction_id?: string;
   release_form_number?: string;
   arrival_date?: string;
@@ -560,25 +804,234 @@ const extractReleaseFormNumberFromText = (text: string): string => {
   return match?.[1] ?? '';
 };
 
+const extractLabeledValueFromText = (text: string, label: string): string => {
+  const raw = String(text ?? '');
+  if (!raw.trim()) return '';
+  const safeLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`\\b${safeLabel}\\b\\s*[:#-]?\\s*([^\\r\\n]{1,60})`, 'i');
+  const match = raw.match(re);
+  const val = String(match?.[1] ?? '').trim();
+  return val;
+};
+
+const extractSectionBlockFromText = (text: string, headingPattern: RegExp, maxChars = 500): string => {
+  const raw = String(text ?? '');
+  if (!raw.trim()) return '';
+  const normalized = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const idx = normalized.search(headingPattern);
+  if (idx < 0) return '';
+  const slice = normalized.slice(idx);
+  const stop = slice.search(/\n\s*(?:Selling\s+Dealership|Sell\w*\s+Dealersh\w*|Pickup\s+Date|Pick\w*\s+Date|Released\s+By|Release\s+Date|Transportation\s+Company|Buyer\b|Seller\b)\b/i);
+  const chunk = stop > 0 ? slice.slice(0, stop) : slice;
+  return chunk.slice(0, maxChars).trim();
+};
+
+const extractBetweenHeadingsFromText = (text: string, startPattern: RegExp, endPatterns: RegExp[], maxChars = 500): string => {
+  const raw = String(text ?? '');
+  if (!raw.trim()) return '';
+  const normalized = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const idx = normalized.search(startPattern);
+  if (idx < 0) return '';
+  const slice = normalized.slice(idx);
+  let endPos = -1;
+  for (const p of endPatterns) {
+    const next = slice.slice(1).search(p);
+    if (next < 0) continue;
+    const pos = next + 1;
+    if (endPos < 0 || pos < endPos) endPos = pos;
+  }
+  const chunk = endPos > 0 ? slice.slice(0, endPos) : slice;
+  return chunk.slice(0, maxChars).trim();
+};
+
+const extractVehicleYmmNearVinFromText = (text: string, vin: string): { year: string; make: string; model: string } => {
+  const raw = String(text ?? '');
+  const v = String(vin ?? '').trim();
+  if (!raw.trim() || !v) return { year: '', make: '', model: '' };
+  const normalized = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+  const normalizeYearToken = (token: string): string => {
+    const repaired = String(token ?? '')
+      .replace(/[Il]/g, '1')
+      .replace(/[Oo]/g, '0');
+    const match = repaired.match(/\b(19\d{2}|20\d{2})\b/);
+    return match?.[1] ?? '';
+  };
+
+  const parseYmmFromLine = (line: string): { year: string; make: string; model: string } => {
+    const s = String(line ?? '').trim();
+    if (!s) return { year: '', make: '', model: '' };
+    const m = s.match(/\b((?:19|20)[0-9IlOo]{2})\b\s+([A-Za-z][A-Za-z0-9&.'\/-]{1,})\s+([^\r\n]{2,60})/);
+    const y = normalizeYearToken(m?.[1] ?? '');
+    if (!y) return { year: '', make: '', model: '' };
+    return { year: y, make: String(m?.[2] ?? '').trim(), model: String(m?.[3] ?? '').trim() };
+  };
+
+  const vinUpper = v.toUpperCase();
+  const idxDirect = normalized.toUpperCase().indexOf(vinUpper);
+  const idxShort = idxDirect >= 0 ? idxDirect : normalized.toUpperCase().indexOf(vinUpper.slice(-8));
+  if (idxShort < 0) return { year: '', make: '', model: '' };
+
+  const windowStart = Math.max(0, idxShort - 500);
+  const windowEnd = Math.min(normalized.length, idxShort + 200);
+  const windowText = normalized.slice(windowStart, windowEnd);
+  const lines = windowText
+    .split('\n')
+    .map((l) => String(l ?? '').trim())
+    .filter(Boolean);
+
+  const yearLine =
+    lines.find((l) => /\b(?:19|20)[0-9IlOo]{2}\b/.test(l) && /[A-Za-z]/.test(l) && !/\bDate\b/i.test(l)) ??
+    '';
+
+  return parseYmmFromLine(yearLine);
+};
+
+const extractFirstPhoneFromText = (text: string): string => {
+  const raw = String(text ?? '');
+  if (!raw.trim()) return '';
+  const match = raw.match(/(\+?1\s*)?\(?\d{3}\)?[\s.-]*\d{3}[\s.-]*\d{4}/);
+  return match ? String(match[0]).trim() : '';
+};
+
+const stripContactFromAddressBlock = (block: string, knownName?: string, headingPatterns?: RegExp | RegExp[]): string => {
+  const raw = String(block ?? '');
+  if (!raw.trim()) return '';
+  const name = String(knownName ?? '').trim().toLowerCase();
+  const phoneRe = /(\+?1\s*)?\(?\d{3}\)?[\s.-]*\d{3}[\s.-]*\d{4}/g;
+  const emailRe = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+  const patterns = Array.isArray(headingPatterns)
+    ? headingPatterns
+    : headingPatterns
+      ? [headingPatterns]
+      : [/\bP[IL]CKUP\s+LOCAT[IL]ON\b\s*:?\s*/i];
+
+  const lines = raw
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((l) => String(l ?? '').trim())
+    .map((line) => {
+      let l = String(line ?? '');
+      for (const p of patterns) l = l.replace(p, '');
+      return l.replace(phoneRe, '').replace(emailRe, '').replace(/\s+/g, ' ').trim();
+    })
+    .filter(Boolean)
+    .filter((l) => {
+      if (!name) return true;
+      return l.toLowerCase() !== name;
+    });
+
+  const joined = lines
+    .join(', ')
+    .replace(/\s*,\s*/g, ', ')
+    .replace(/\s+/g, ' ')
+    .replace(/,\s*$/, '')
+    .trim();
+  return joined;
+};
+
+const looksLikeCleanStreetAddress = (value: string): boolean => {
+  const raw = String(value ?? '').trim();
+  if (!raw) return false;
+  if (!looksLikeStreetAddress(raw)) return false;
+  if (/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i.test(raw)) return false;
+  if (/(\+?1\s*)?\(?\d{3}\)?[\s.-]*\d{3}[\s.-]*\d{4}/.test(raw)) return false;
+  if (/\bP[IL]CKUP\s+LOCAT[IL]ON\b/i.test(raw)) return false;
+  if (/\,\s*,/.test(raw)) return false;
+  if (/\bCA\.?\s*$/i.test(raw)) return false;
+  return true;
+};
+
 const extractVinFromText = (text: string): string => {
   const raw = String(text ?? '').toUpperCase();
   if (!raw) return '';
 
+  const repair = (candidate: string): string =>
+    String(candidate ?? '')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '')
+      .replace(/I/g, '1')
+      .replace(/[OQ]/g, '0');
+
+  const translit = (c: string): number => {
+    if (/\d/.test(c)) return Number(c);
+    switch (c) {
+      case 'A':
+      case 'J':
+        return 1;
+      case 'B':
+      case 'K':
+      case 'S':
+        return 2;
+      case 'C':
+      case 'L':
+      case 'T':
+        return 3;
+      case 'D':
+      case 'M':
+      case 'U':
+        return 4;
+      case 'E':
+      case 'N':
+      case 'V':
+        return 5;
+      case 'F':
+      case 'W':
+        return 6;
+      case 'G':
+      case 'P':
+      case 'X':
+        return 7;
+      case 'H':
+      case 'Y':
+        return 8;
+      case 'R':
+      case 'Z':
+        return 9;
+      default:
+        return -1;
+    }
+  };
+
+  const vinCheckDigit = (vin: string): string | null => {
+    const v = String(vin ?? '').toUpperCase();
+    if (!/^[A-HJ-NPR-Z0-9]{17}$/.test(v)) return null;
+    const weights = [8, 7, 6, 5, 4, 3, 2, 10, 0, 9, 8, 7, 6, 5, 4, 3, 2];
+    let sum = 0;
+    for (let i = 0; i < 17; i += 1) {
+      const val = translit(v[i]);
+      if (val < 0) return null;
+      sum += val * weights[i];
+    }
+    const mod = sum % 11;
+    return mod === 10 ? 'X' : String(mod);
+  };
+
   const isValidVinCandidate = (candidate: string): boolean => {
-    const vin = String(candidate ?? '').trim();
+    const vin = repair(candidate);
     if (!vin) return false;
     if (!/^[A-HJ-NPR-Z0-9]{17}$/.test(vin)) return false;
     if (!/[0-9]/.test(vin)) return false;
+    const expected = vinCheckDigit(vin);
+    if (!expected) return false;
+    if (vin[8] !== expected) return false;
     return true;
   };
 
-  const direct = raw.match(/\b[A-HJ-NPR-Z0-9]{17}\b/g) ?? [];
-  const directValid = direct.find((c) => isValidVinCandidate(c));
+  const labeled = raw.match(/\bVIN\b[^A-Z0-9]{0,10}([A-Z0-9][A-Z0-9\s\-]{16,40})/i);
+  if (labeled?.[1]) {
+    const c = repair(labeled[1]);
+    if (isValidVinCandidate(c)) return c;
+  }
+
+  const direct = raw.match(/\b[A-Z0-9]{17}\b/g) ?? [];
+  const directValid = direct.map(repair).find((c) => isValidVinCandidate(c));
   if (directValid) return directValid;
 
-  const looseMatches = raw.match(/(?:[A-HJ-NPR-Z0-9][\s\-]*){17}/g) ?? [];
+  const looseMatches = raw.match(/(?:[A-Z0-9][\s\-]*){17}/g) ?? [];
   for (const match of looseMatches) {
-    const compact = match.replace(/[^A-HJ-NPR-Z0-9]/g, '');
+    const compact = repair(match);
     if (isValidVinCandidate(compact)) return compact;
   }
 
@@ -685,15 +1138,28 @@ const extractWebhookText = (data: unknown): string | null => {
   return s || null;
 };
 
-export default function FileUploadSection({ hideHeader = false, onContinueToSignIn, persistState = true }: FileUploadSectionProps) {
+export default function FileUploadSection({ hideHeader: _hideHeader = false, onContinueToSignIn, persistState = true }: FileUploadSectionProps) {
   const STORAGE_FORM = 'ed_extractedFormData';
   const STORAGE_MESSAGE = 'ed_submitMessage';
   const STORAGE_ERROR = 'ed_submitError';
-  const STORAGE_DRAFTS = 'ed_checkout_drafts';
   const STORAGE_RECEIPTS_PENDING = 'ed_receipts_pending';
   const STORAGE_RECEIPTS_BY_USER_PREFIX = 'ed_receipts_by_user_';
 
-  void hideHeader;
+  const extractionUrl = (() => {
+    const fnPath = '/.netlify/functions/extract-documents';
+    const isLocalhost =
+      typeof window !== 'undefined' &&
+      (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+    if (import.meta.env.DEV && isLocalhost) {
+      return `http://localhost:8888${fnPath}`;
+    }
+    const envUrl = String(import.meta.env.VITE_EXTRACTION_URL ?? '').trim();
+    if (envUrl) return envUrl;
+    return fnPath;
+  })();
+
+  const STORAGE_DRAFTS = 'ed_checkout_drafts_v1';
+  const STORAGE_DRAFTS_PRIMARY = 'ed_checkout_drafts';
 
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [userKey, setUserKey] = useState<string | null>(null);
@@ -806,7 +1272,6 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       return false;
     }
   });
-  const [isRouteRequiredOpen, setIsRouteRequiredOpen] = useState(false);
   const [isDropoffValidationOpen, setIsDropoffValidationOpen] = useState(false);
   const [dropoffValidationMissingFields, setDropoffValidationMissingFields] = useState<string[]>([]);
   const [formData, setFormData] = useState<FormData | null>(() => {
@@ -820,10 +1285,33 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
     }
   });
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const routeServiceAreaRef = useRef<HTMLSelectElement>(null);
   const suppressGeocodeRef = useRef(false);
-  const lastServiceAreaGeocodeRef = useRef<string | null>(null);
+  const autoExtractTriggeredRef = useRef(false);
   const [dealershipCoords, setDealershipCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const pickupStreetLine1EditingRef = useRef(false);
+  const dropoffStreetLine1EditingRef = useRef(false);
+  const [pickupStreetLine1Input, setPickupStreetLine1Input] = useState('');
+  const [dropoffStreetLine1Input, setDropoffStreetLine1Input] = useState('');
+  const [pickupStreetSelected, setPickupStreetSelected] = useState(false);
+  const [pickupNumberError, setPickupNumberError] = useState<string | null>(null);
+  const [dropoffStreetSelected, setDropoffStreetSelected] = useState(false);
+  const [dropoffNumberError, setDropoffNumberError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (pickupStreetLine1EditingRef.current) return;
+    const derived = normalizeWhitespace(
+      `${String(formData?.pickup_location?.number ?? '').trim()} ${String(formData?.pickup_location?.street ?? '').trim()}`.trim()
+    );
+    setPickupStreetLine1Input(derived);
+  }, [formData?.pickup_location?.number, formData?.pickup_location?.street]);
+
+  useEffect(() => {
+    if (dropoffStreetLine1EditingRef.current) return;
+    const derived = normalizeWhitespace(
+      `${String(formData?.dropoff_location?.number ?? '').trim()} ${String(formData?.dropoff_location?.street ?? '').trim()}`.trim()
+    );
+    setDropoffStreetLine1Input(derived);
+  }, [formData?.dropoff_location?.number, formData?.dropoff_location?.street]);
 
   const dropoffMarkerIcon = useMemo(
     () =>
@@ -888,26 +1376,31 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       costData,
       docCount: draftDocCount ?? uploadedFiles.length,
       draftSource: 'manual',
+      uploadedFilesMeta: uploadedFiles.map((f) => ({ key: makeDraftFileKey(f.file), name: f.name, docType: f.docType })),
     };
     try {
-      const raw = localStorage.getItem(STORAGE_DRAFTS);
+      const raw = localStorage.getItem(STORAGE_DRAFTS_PRIMARY) ?? localStorage.getItem(STORAGE_DRAFTS);
       const parsed = raw ? (JSON.parse(raw) as unknown) : null;
       const existing = Array.isArray(parsed) ? (parsed as CheckoutDraft[]) : [];
 
-      if (activeDraftId) {
-        const idx = existing.findIndex((d) => d && typeof d === 'object' && (d as CheckoutDraft).id === activeDraftId);
-        if (idx >= 0) {
-          const next = [...existing];
-          next[idx] = draft;
-          localStorage.setItem(STORAGE_DRAFTS, JSON.stringify(next));
-        } else {
-          localStorage.setItem(STORAGE_DRAFTS, JSON.stringify([draft, ...existing]));
+      const next = (() => {
+        if (activeDraftId) {
+          const idx = existing.findIndex((d) => d && typeof d === 'object' && (d as CheckoutDraft).id === activeDraftId);
+          if (idx >= 0) {
+            const copy = [...existing];
+            copy[idx] = draft;
+            return copy;
+          }
         }
-      } else {
-        localStorage.setItem(STORAGE_DRAFTS, JSON.stringify([draft, ...existing]));
-      }
+        return [draft, ...existing];
+      })();
+
+      localStorage.setItem(STORAGE_DRAFTS_PRIMARY, JSON.stringify(next));
+      localStorage.setItem(STORAGE_DRAFTS, JSON.stringify(next));
     } catch {
-      // ignore
+      setSubmitMessage('Failed to save draft. Please check browser storage settings and try again.');
+      setSubmitError(true);
+      return;
     }
 
     try {
@@ -921,12 +1414,14 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
     setSubmitError(false);
   };
 
-  const saveDraftBeforeSignIn = useCallback(async () => {
-    if (uploadedFiles.length === 0 && !formData && !costData) return;
+  const saveDraftBeforeSignIn = useCallback(async (override?: { formData?: FormData | null; costData?: CostData | null }) => {
+    const effectiveFormData = override && 'formData' in override ? override.formData : formData;
+    const effectiveCostData = override && 'costData' in override ? override.costData ?? null : costData;
+    if (uploadedFiles.length === 0 && !effectiveFormData && !effectiveCostData) return;
 
     const draftId = activeDraftId ?? `${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const baseForm: FormData =
-      formData ??
+      effectiveFormData ??
       ({
         service: { service_type: 'pickup_one_way', vehicle_type: 'standard' },
         vehicle: {
@@ -953,7 +1448,6 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
           ...emptyAddressBreakdown(),
           lat: '',
           lng: '',
-          service_area: '',
         },
         transaction: { transaction_id: '', release_form_number: '', release_date: '', arrival_date: '' },
         authorization: { released_by_name: '', released_to_name: '' },
@@ -964,10 +1458,11 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       id: draftId,
       createdAt: new Date().toISOString(),
       formData: { ...baseForm, draft_source: String(baseForm.draft_source ?? '').trim() || 'manual' },
-      costData,
+      costData: effectiveCostData,
       docCount: draftDocCount ?? uploadedFiles.length,
       draftSource: 'manual',
-      needsExtraction: !formData,
+      needsExtraction: !effectiveFormData,
+      uploadedFilesMeta: uploadedFiles.map((f) => ({ key: makeDraftFileKey(f.file), name: f.name, docType: f.docType })),
     };
 
     if (uploadedFiles.length > 0) {
@@ -1043,12 +1538,40 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
         const nextCostData = detail.costData;
         const nextDocCount = detail.docCount;
         const nextDraftId = detail.id;
+        const uploadedFilesMetaRaw = (detail as Record<string, unknown>).uploadedFilesMeta;
+        const uploadedFilesMeta = Array.isArray(uploadedFilesMetaRaw)
+          ? (uploadedFilesMetaRaw
+              .map((x) => {
+                if (!isRecord(x)) return null;
+                const key = readString(x.key);
+                const name = readString(x.name);
+                const docType = x.docType;
+                if (!key || !name) return null;
+                if (
+                  docType !== 'release_form' &&
+                  docType !== 'work_order' &&
+                  docType !== 'bill_of_sale' &&
+                  docType !== 'photo' &&
+                  docType !== 'notes' &&
+                  docType !== 'other' &&
+                  docType !== 'unknown'
+                ) {
+                  return null;
+                }
+                return { key, name, docType } as { key: string; name: string; docType: UploadedFile['docType'] };
+              })
+              .filter(Boolean) as Array<{ key: string; name: string; docType: UploadedFile['docType'] }>)
+          : [];
         if (!isRecord(nextFormData)) return;
         const draftId = typeof nextDraftId === 'string' ? nextDraftId : null;
 
         const needsExtraction = Boolean((detail as Record<string, unknown>)?.needsExtraction);
 
-        setFormData(needsExtraction ? null : (nextFormData as FormData));
+        const restoredFormData = !needsExtraction ? (nextFormData as FormData) : null;
+        setFormData(restoredFormData);
+
+        setPickupStreetSelected(Boolean(String(restoredFormData?.pickup_location?.street ?? '').trim()));
+        setDropoffStreetSelected(Boolean(String(restoredFormData?.dropoff_location?.street ?? '').trim()));
 
         const hasCost = !needsExtraction && isRecord(nextCostData);
         setCostData(hasCost ? (nextCostData as CostData) : null);
@@ -1060,12 +1583,18 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
             const files = await getDraftFiles(draftId);
             if (files && files.length) {
               const restored: UploadedFile[] = files.map((file) => ({
+                ...(uploadedFilesMeta.length
+                  ? (() => {
+                      const key = makeDraftFileKey(file);
+                      const meta = uploadedFilesMeta.find((m) => m.key === key) ?? uploadedFilesMeta.find((m) => m.name === file.name);
+                      return { docType: meta?.docType ?? ('unknown' as const) };
+                    })()
+                  : { docType: 'unknown' as const }),
                 id: Math.random().toString(36).slice(2),
                 name: file.name,
                 size: formatFileSize(file.size),
                 type: file.type || 'unknown',
                 file,
-                docType: 'unknown',
               }));
               setUploadedFiles(restored);
             } else {
@@ -1126,6 +1655,89 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
     return { lat, lng };
   };
+
+  const decodeVinViaNhtsa = async (vin: string): Promise<{ year: string; make: string; model: string } | null> => {
+    const v = String(vin ?? '').trim().toUpperCase();
+    if (!/^[A-HJ-NPR-Z0-9]{17}$/.test(v)) return null;
+    const url = `https://vpic.nhtsa.dot.gov/api/vehicles/decodevinvaluesextended/${encodeURIComponent(v)}?format=json`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const json = (await res.json().catch(() => null)) as unknown;
+    const results = isRecord(json) ? (json as Record<string, unknown>).Results : null;
+    const first = Array.isArray(results) && results.length ? (results[0] as unknown) : null;
+    if (!isRecord(first)) return null;
+    const year = String((first as Record<string, unknown>).ModelYear ?? '').trim();
+    const make = String((first as Record<string, unknown>).Make ?? '').trim();
+    const model = String((first as Record<string, unknown>).Model ?? '').trim();
+    if (!year && !make && !model) return null;
+    return { year, make, model };
+  };
+
+  const validateStreetNumber = async ({ number, street, city, province }: { number: string; street: string; city: string; province: string }): Promise<boolean> => {
+    const n = String(number ?? '').trim();
+    const st = String(street ?? '').trim();
+    const c = String(city ?? '').trim();
+    const p = String(province ?? '').trim();
+    if (!n || !st || !c || !p) return false;
+    if (!/^\d{1,6}[A-Za-z]?$/.test(n)) return false;
+    const stClean = stripDiacritics(st);
+    const cClean = stripDiacritics(c);
+    const url = `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=pjson&maxLocations=1&outFields=*&Address=${encodeURIComponent(`${n} ${stClean}`)}&City=${encodeURIComponent(cClean)}&Region=${encodeURIComponent(p)}&CountryCode=CAN`;
+    const res = await fetch(url);
+    if (!res.ok) return true;
+    const data = (await res.json().catch(() => null)) as {
+      candidates?: Array<{ score?: number; address?: string }>;
+    };
+    const cand = (data?.candidates ?? [])[0];
+    const score = Number(cand?.score);
+    if (!Number.isFinite(score)) return true;
+    if (score < 80) return false;
+    return true;
+  };
+
+  useEffect(() => {
+    if (pickupStreetSelected) {
+      setPickupNumberError(null);
+      return;
+    }
+    const city = String(formData?.pickup_location?.city ?? '').trim();
+    const province = String(formData?.pickup_location?.province ?? '').trim();
+    const street = String(formData?.pickup_location?.street ?? '').trim();
+    const number = String(formData?.pickup_location?.number ?? '').trim();
+    if (!city || !province || !street) {
+      setPickupNumberError(null);
+      return;
+    }
+    if (!number || street.length < 2) {
+      setPickupNumberError(null);
+      return;
+    }
+    const timer = window.setTimeout(async () => {
+      const ok = await validateStreetNumber({ number, street, city, province }).catch(() => false);
+      setPickupNumberError(ok ? null : 'Street number not found on this street in this city');
+    }, 320);
+    return () => window.clearTimeout(timer);
+  }, [pickupStreetSelected, formData?.pickup_location?.number, formData?.pickup_location?.street, formData?.pickup_location?.city, formData?.pickup_location?.province]);
+
+  useEffect(() => {
+    const city = String(formData?.dropoff_location?.city ?? '').trim();
+    const province = String(formData?.dropoff_location?.province ?? '').trim();
+    const street = String(formData?.dropoff_location?.street ?? '').trim();
+    const number = String(formData?.dropoff_location?.number ?? '').trim();
+    if (!city || !province || !street) {
+      setDropoffNumberError(null);
+      return;
+    }
+    if (!number || street.length < 2) {
+      setDropoffNumberError(null);
+      return;
+    }
+    const timer = window.setTimeout(async () => {
+      const ok = await validateStreetNumber({ number, street, city, province }).catch(() => false);
+      setDropoffNumberError(ok ? null : 'Street number not found on this street in this city');
+    }, 320);
+    return () => window.clearTimeout(timer);
+  }, [dropoffStreetSelected, formData?.dropoff_location?.number, formData?.dropoff_location?.street, formData?.dropoff_location?.city, formData?.dropoff_location?.province]);
 
   const reverseGeocode = async (lat: number, lng: number): Promise<string | null> => {
     const url = `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/reverseGeocode?f=pjson&location=${encodeURIComponent(String(lng))}%2C${encodeURIComponent(String(lat))}`;
@@ -1281,61 +1893,6 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
   }, [formData?.pickup_location?.address]);
 
   useEffect(() => {
-    const area = String(formData?.dropoff_location?.service_area ?? '').trim();
-    if (!area) return;
-
-    const latRaw = String(formData?.dropoff_location?.lat ?? '').trim();
-    const lngRaw = String(formData?.dropoff_location?.lng ?? '').trim();
-    const lat = Number(latRaw);
-    const lng = Number(lngRaw);
-    const hasValidCoords =
-      latRaw !== '' &&
-      lngRaw !== '' &&
-      Number.isFinite(lat) &&
-      Number.isFinite(lng) &&
-      lat >= -90 &&
-      lat <= 90 &&
-      lng >= -180 &&
-      lng <= 180 &&
-      !(lat === 0 && lng === 0);
-
-    const prevArea = lastServiceAreaGeocodeRef.current;
-    lastServiceAreaGeocodeRef.current = area;
-
-    // On first render/load, don't override coordinates that were already extracted from the PDF.
-    if (prevArea === null && hasValidCoords) return;
-
-    // If nothing changed and coords are already valid, do nothing.
-    if (prevArea === area && hasValidCoords) return;
-
-    const query = (SERVICE_AREA_GEOCODE_QUERY as Record<string, string>)[area] ?? `${area}, Canada`;
-    const existingAddress = String(formData?.dropoff_location?.address ?? '').trim();
-    const timer = window.setTimeout(async () => {
-      try {
-        const result = await geocodeAddress(query);
-        if (!result) return;
-
-        updateFormField('dropoff_location', 'lat', String(result.lat));
-        updateFormField('dropoff_location', 'lng', String(result.lng));
-
-        // Don't write the service area label into address; address breakdown should stay a real address.
-        if (!existingAddress) {
-          suppressGeocodeRef.current = true;
-        }
-      } catch {
-        // ignore
-      }
-    }, 350);
-
-    return () => window.clearTimeout(timer);
-  }, [
-    formData?.dropoff_location?.service_area,
-    formData?.dropoff_location?.lat,
-    formData?.dropoff_location?.lng,
-    formData?.dropoff_location?.address,
-  ]);
-
-  useEffect(() => {
     const vt = String(formData?.service?.vehicle_type ?? 'standard');
     if (vt && vt !== 'standard') {
       updateFormField('service', 'vehicle_type', 'standard');
@@ -1432,6 +1989,67 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
     });
   };
 
+  const fileToJpegBase64 = (file: File): Promise<{ base64: string; name: string; type: string }> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result;
+        if (typeof result !== 'string') {
+          reject(new Error('Failed to read file'));
+          return;
+        }
+
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const srcW = Math.max(1, img.naturalWidth || img.width || 1);
+          const srcH = Math.max(1, img.naturalHeight || img.height || 1);
+          const longSide = Math.max(srcW, srcH);
+          const targetLongSide = Math.min(2600, Math.max(1600, longSide));
+          const scale = longSide > 0 ? targetLongSide / longSide : 1;
+          canvas.width = Math.max(1, Math.round(srcW * scale));
+          canvas.height = Math.max(1, Math.round(srcH * scale));
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            reject(new Error('Image conversion failed'));
+            return;
+          }
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = 'high';
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.filter = 'grayscale(1) contrast(1.25) brightness(1.05)';
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          ctx.filter = 'none';
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+          const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+          const baseName = String(file.name ?? 'upload').replace(/\.[^./\\]+$/, '');
+          resolve({ base64, name: `${baseName}.jpg`, type: 'image/jpeg' });
+        };
+        img.onerror = () => reject(new Error('Image conversion failed'));
+        img.src = result;
+      };
+      reader.onerror = () => reject(reader.error ?? new Error('Failed to read file'));
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const prepareFileForExtraction = async (f: UploadedFile): Promise<{ name: string; type: string; size: number; base64: string; docType: UploadedFile['docType'] }> => {
+    const normalizedType = normalizeMimeType(f.name, f.type);
+    const isImage = /^image\//i.test(normalizedType) || /^image\//i.test(String(f.file?.type ?? ''));
+    if (isImage) {
+      const jpeg = await fileToJpegBase64(f.file);
+      return { name: jpeg.name, type: jpeg.type, size: f.file.size, base64: jpeg.base64, docType: f.docType };
+    }
+    return {
+      name: f.name,
+      type: normalizedType,
+      size: f.file.size,
+      base64: await fileToBase64(f.file),
+      docType: f.docType,
+    };
+  };
+
   const initFormData = (output: unknown): FormData | null => {
     if (!output || !isRecord(output)) return null;
 
@@ -1442,6 +2060,60 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       (outputObj as Record<string, unknown>).extractedText
     );
     const rawExtractedTextAll = rawExtractedText || collectTextFromUnknown(outputObj);
+
+    const vinFromTextEarly = extractVinFromText(rawExtractedTextAll);
+
+    const buyerHeadingStrict = /(?:^|\n)\s*Buyer\s*(?:\n|$)/i;
+    const vehicleHeadingStrict = /(?:^|\n)\s*Vehicle\s*(?:\n|$)/i;
+    const pickupHeadingStrict = /(?:^|\n)\s*Pickup\s+location\s*(?:\n|$)/i;
+
+    const buyerBlockFromText =
+      extractBetweenHeadingsFromText(rawExtractedTextAll, buyerHeadingStrict, [vehicleHeadingStrict, pickupHeadingStrict], 520) ||
+      extractBetweenHeadingsFromText(rawExtractedTextAll, /\bBuyer\b/i, [/\bVehicle\b/i, /\bPickup\s+location\b/i], 420);
+    const buyerNameFromText = (() => {
+      const lines = buyerBlockFromText
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .split('\n')
+        .map((l) => String(l ?? '').trim())
+        .filter(Boolean);
+      const startIdx = lines.findIndex((l) => /^Buyer\b/i.test(l));
+      const after = startIdx >= 0 ? lines.slice(startIdx + 1) : lines;
+      const candidate = after.find((l) => !/^\s*(?:Buyer|Vehicle|Pickup\s+location)\b/i.test(l));
+      return String(candidate ?? '').trim();
+    })();
+    const buyerPhoneFromText = extractFirstPhoneFromText(buyerBlockFromText);
+
+    const vehicleBlockFromText =
+      extractBetweenHeadingsFromText(rawExtractedTextAll, vehicleHeadingStrict, [pickupHeadingStrict, buyerHeadingStrict], 520) ||
+      extractBetweenHeadingsFromText(rawExtractedTextAll, /\bVehicle\b/i, [/\bPickup\s+location\b/i, /\bBuyer\b/i], 420);
+    const vehicleYmmFromText = (() => {
+      const normalizeYearToken = (token: string): string => {
+        const repaired = String(token ?? '')
+          .replace(/[Il]/g, '1')
+          .replace(/[Oo]/g, '0');
+        const match = repaired.match(/\b(19\d{2}|20\d{2})\b/);
+        return match?.[1] ?? '';
+      };
+
+      const parseYmmFromLine = (line: string): { year: string; make: string; model: string } => {
+        const s = String(line ?? '').trim();
+        if (!s) return { year: '', make: '', model: '' };
+        const m = s.match(/\b((?:19|20)[0-9IlOo]{2})\b\s+([A-Za-z][A-Za-z0-9&.'\/-]{1,})\s+([^\r\n]{2,60})/);
+        const y = normalizeYearToken(m?.[1] ?? '');
+        if (!y) return { year: '', make: '', model: '' };
+        return { year: y, make: String(m?.[2] ?? '').trim(), model: String(m?.[3] ?? '').trim() };
+      };
+
+      const lines = vehicleBlockFromText
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .split('\n')
+        .map((l) => String(l ?? '').trim())
+        .filter(Boolean);
+      const yearLine = lines.find((l) => /\b(?:19|20)[0-9IlOo]{2}\b/.test(l) && /[A-Za-z]/.test(l)) ?? '';
+      return parseYmmFromLine(yearLine);
+    })();
 
     const serviceObj = isRecord(output.service) ? output.service : null;
     const transactionObj = isRecord(output.transaction) ? output.transaction : null;
@@ -1545,17 +2217,15 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
     const dropoffPhone = extractedDropoffPhone;
     const dropoffLat = Number.isFinite(readNumber(extractedDropoffLat)) ? String(readNumber(extractedDropoffLat)) : '';
     const dropoffLng = Number.isFinite(readNumber(extractedDropoffLng)) ? String(readNumber(extractedDropoffLng)) : '';
-    const inferredServiceArea =
-      getOfficialCityPriceForAddress(`${dropoffAddress} ${String(dropoffName ?? '').trim()}`.trim())?.city ??
-      getOfficialCityPriceForServiceArea(String(extractedDropoffCity ?? '').trim())?.city ??
-      '';
 
     const vehicleVin =
       pickFirstString(
         vehicleObj?.vin,
         getLooseValue(vehicleObj, 'vin', 'vehicle_vin', 'vehiclevin', 'vin_number', 'vinnumber'),
         getLooseValue(outputObj, 'vin', 'vehicle_vin', 'vehiclevin', 'vin_number', 'vinnumber')
-      ) || extractVinFromText(rawExtractedTextAll);
+      ) || vinFromTextEarly;
+
+    const vehicleYmmNearVinFromText = extractVehicleYmmNearVinFromText(rawExtractedTextAll, String(vehicleVin ?? '').trim() || vinFromTextEarly);
     const vehicleYear =
       normalizeVehicleYear(
         pickFirstString(
@@ -1563,19 +2233,22 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
           getLooseValue(vehicleObj, 'year', 'vehicle_year', 'vehicleyear'),
           getLooseValue(outputObj, 'year', 'vehicle_year', 'vehicleyear')
         )
-      ) || extractVehicleYearFromText(rawExtractedText);
+      ) || extractVehicleYearFromText(rawExtractedText) || vehicleYmmFromText.year || vehicleYmmNearVinFromText.year;
     const vehicleMake = pickFirstString(
       vehicleObj?.make,
       getLooseValue(outputObj, 'make', 'vehicle_make')
-    );
+    ) || extractLabeledValueFromText(rawExtractedTextAll, 'Make') || vehicleYmmFromText.make || vehicleYmmNearVinFromText.make;
     const vehicleModel = pickFirstString(
       vehicleObj?.model,
       getLooseValue(outputObj, 'model', 'vehicle_model')
-    );
+    ) || extractLabeledValueFromText(rawExtractedTextAll, 'Model') || vehicleYmmFromText.model || vehicleYmmNearVinFromText.model;
     const vehicleTransmission = pickFirstString(
       vehicleObj?.transmission,
       getLooseValue(outputObj, 'transmission', 'vehicle_transmission')
-    );
+    ) ||
+    extractLabeledValueFromText(rawExtractedTextAll, 'Transmission') ||
+    extractLabeledValueFromText(rawExtractedTextAll, 'Transmlsslon') ||
+    extractLabeledValueFromText(rawExtractedTextAll, 'Transm');
     const vehicleOdometerRaw = pickFirstString(
       vehicleObj?.odometer_km,
       getLooseValue(vehicleObj, 'odometer_km', 'odometer', 'odometerkm', 'mileage', 'vehicle_odometer'),
@@ -1586,7 +2259,24 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       vehicleObj?.exterior_color,
       getLooseValue(vehicleObj, 'exterior_color', 'color', 'exteriorcolor', 'vehicle_color'),
       getLooseValue(outputObj, 'exterior_color', 'color', 'exteriorcolor', 'vehicle_color')
-    );
+    ) || extractLabeledValueFromText(rawExtractedTextAll, 'Color');
+
+    const sellingBlockFromText = extractSectionBlockFromText(rawExtractedTextAll, /\bS[EL]LL[IL]NG\s+DEALERSH[IL]P\b/i);
+    const sellingNameFromText = (() => {
+      const lines = sellingBlockFromText
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .split('\n')
+        .map((l) => String(l ?? '').trim())
+        .filter(Boolean);
+      const startIdx = lines.findIndex((l) => /S[EL]LL[IL]NG\s+DEALERSH[IL]P/i.test(l));
+      return startIdx >= 0 ? String(lines[startIdx + 1] ?? '').trim() : '';
+    })();
+    const sellingPhoneFromText = extractFirstPhoneFromText(sellingBlockFromText);
+    const sellingAddressFromText = stripContactFromAddressBlock(sellingBlockFromText, sellingNameFromText, [
+      /\bS[EL]LL[IL]NG\s+DEALERSH[IL]P\b\s*:?\s*/i,
+      /\bSell\w*\s+Dealersh\w*\b\s*:?\s*/i,
+    ]);
 
     const sellingName = pickFirstString(
       sellingObj?.name,
@@ -1609,7 +2299,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       ),
       getLooseValue(outputObj, 'pickup_location_name', 'pickuplocationname', 'pickup_name', 'pickupname'),
       pickupObj?.name
-    );
+    ) || sellingNameFromText;
     const sellingPhone = pickFirstString(
       sellingObj?.phone,
       getLooseValue(
@@ -1625,7 +2315,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       ),
       getLooseValue(outputObj, 'pickup_location_phone', 'pickuplocationphone', 'pickup_phone', 'pickupphone'),
       pickupObj?.phone
-    );
+    ) || sellingPhoneFromText;
     const sellingAddress = pickFirstString(
       sellingObj?.address,
       getLooseValue(
@@ -1641,6 +2331,37 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       getLooseValue(outputObj, 'pickup_location_address', 'pickuplocationaddress', 'pickup_address', 'pickupaddress'),
       pickupObj?.address
     );
+
+    const sellingAddressFinal = (() => {
+      const candidate = String(sellingAddress ?? '').trim();
+      if (looksLikeCleanStreetAddress(candidate)) return candidate;
+      const cleaned = String(sellingAddressFromText ?? '').trim();
+      const parsed = parseAddressToBreakdown(cleaned);
+      const rebuilt = buildAddressFromBreakdown({
+        street: String(parsed.street ?? '').trim(),
+        number: String(parsed.number ?? '').trim(),
+        unit: String(parsed.unit ?? '').trim(),
+        area: String(parsed.area ?? '').trim(),
+        city: String(parsed.city ?? '').trim(),
+        province: normalizeWhitespace(String(parsed.province ?? '').trim()),
+        postal_code: normalizePostalCode(String(parsed.postal_code ?? '').trim()),
+        country: normalizeCountry(String(parsed.country ?? 'Canada')),
+      });
+      return looksLikeStreetAddress(rebuilt) ? rebuilt : '';
+    })();
+
+    const buyingBlockFromText = extractSectionBlockFromText(rawExtractedTextAll, /\b(?:BUYING|8UYLNG|BUYLNG)\s+DEALERSH[IL]P\b/i);
+    const buyingNameFromText = (() => {
+      const lines = buyingBlockFromText
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .split('\n')
+        .map((l) => String(l ?? '').trim())
+        .filter(Boolean);
+      const startIdx = lines.findIndex((l) => /(?:BUYING|8UYLNG|BUYLNG)\s+DEALERSH/i.test(l));
+      return startIdx >= 0 ? String(lines[startIdx + 1] ?? '').trim() : '';
+    })();
+    const buyingPhoneFromText = extractFirstPhoneFromText(buyingBlockFromText);
 
     const buyingName = pickFirstString(
       buyingObj?.name,
@@ -1688,7 +2409,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       ),
       getLooseValue(outputObj, 'dropoff_location_name', 'dropofflocationname', 'dropoff_name', 'dropoffname', 'delivery_location_name', 'deliverylocationname'),
       dropoffObj?.name
-    );
+    ) || buyingNameFromText || buyerNameFromText;
     const buyingPhone = pickFirstString(
       buyingObj?.phone,
       buyingObj2?.phone,
@@ -1722,7 +2443,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       ),
       getLooseValue(outputObj, 'dropoff_location_phone', 'dropofflocationphone', 'dropoff_phone', 'dropoffphone', 'delivery_location_phone', 'deliverylocationphone'),
       dropoffObj?.phone
-    );
+    ) || buyingPhoneFromText || buyerPhoneFromText;
     const buyingContactName = pickFirstString(
       buyingObj?.contact_name,
       buyingObj2?.contact_name,
@@ -1740,12 +2461,31 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       dropoffObj?.contact
     );
 
-    const pickupName = pickFirstString(pickupObj?.name, getLooseValue(outputObj, 'pickup_location_name', 'pickuplocationname', 'pickup_name', 'pickupname'));
-    const pickupAddress = pickFirstString(pickupObj?.address, getLooseValue(outputObj, 'pickup_location_address', 'pickuplocationaddress', 'pickup_address', 'pickupaddress'));
+    const pickupBlockFromText = extractSectionBlockFromText(rawExtractedTextAll, /\bP[IL]CKUP\s+LOCAT[IL]ON\b/i);
+    const pickupNameFromText = (() => {
+      if (!pickupBlockFromText) return '';
+      const lines = pickupBlockFromText
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .split('\n')
+        .map((l) => String(l ?? '').trim())
+        .filter(Boolean);
+      const startIdx = lines.findIndex((l) => /P[IL]CKUP\s+LOCAT[IL]ON/i.test(l));
+      const candidate = startIdx >= 0 ? (lines[startIdx + 1] ?? '') : '';
+      return String(candidate ?? '').trim();
+    })();
+    const pickupAddressOnlyFromText = stripContactFromAddressBlock(pickupBlockFromText, pickupNameFromText);
+    const pickupName =
+      pickFirstString(pickupObj?.name, getLooseValue(outputObj, 'pickup_location_name', 'pickuplocationname', 'pickup_name', 'pickupname')) ||
+      pickupNameFromText;
+    const pickupAddress =
+      pickFirstString(pickupObj?.address, getLooseValue(outputObj, 'pickup_location_address', 'pickuplocationaddress', 'pickup_address', 'pickupaddress')) ||
+      pickupAddressOnlyFromText;
     const pickupPhone = pickFirstString(
       pickupObj?.phone,
       getLooseValue(outputObj, 'pickup_location_phone', 'pickuplocationphone', 'pickup_phone', 'pickupphone'),
-      sellingPhone
+      sellingPhone,
+      extractFirstPhoneFromText(pickupBlockFromText)
     );
 
     const transactionId =
@@ -1770,9 +2510,27 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       pickupObj?.full_address,
       pickupObj?.fullAddress,
       pickupAddress,
-      sellingAddress
+      sellingAddressFinal,
+      sellingAddress,
+      pickupAddressOnlyFromText
     );
-    const parsedPickup = parseAddressToBreakdown(pickupAddressForParsing);
+    const parsedPickupInitial = parseAddressToBreakdown(pickupAddressForParsing);
+    const parsedPickup = (() => {
+      const hasStreet = !!String(parsedPickupInitial.street ?? '').trim();
+      const hasNumber = !!String(parsedPickupInitial.number ?? '').trim();
+      const hasCity = !!String(parsedPickupInitial.city ?? '').trim();
+      const hasPostal = !!String(parsedPickupInitial.postal_code ?? '').trim();
+      const looksIncomplete = !(hasStreet && hasNumber && (hasCity || hasPostal));
+      if (!looksIncomplete) return parsedPickupInitial;
+
+      const parsedSelling = parseAddressToBreakdown(String(sellingAddressFinal ?? '').trim());
+      const hasSellingStreet = !!String(parsedSelling.street ?? '').trim();
+      const hasSellingNumber = !!String(parsedSelling.number ?? '').trim();
+      const hasSellingCity = !!String(parsedSelling.city ?? '').trim();
+      if (!(hasSellingStreet && hasSellingNumber && hasSellingCity)) return parsedPickupInitial;
+
+      return parsedSelling;
+    })();
     const dropoffAddressForParsing = pickBestAddressCandidate(
       dropoffObj?.full_address,
       dropoffObj?.fullAddress,
@@ -1798,11 +2556,12 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       getLooseValue(outputObj, 'pickup_number', 'pickupNumber')
     );
     const pickupStreet = pickFirstString(
+      parsedPickup.street,
       pickupObj?.street,
       pickupObj?.street_name,
       getLooseValue(outputObj, 'pickup_street', 'pickupStreet')
     );
-    const pickupStreetFinal = pickupNumber ? pickFirstString(parsedPickup.street, pickupStreet) : pickupStreet;
+    const pickupStreetFinal = pickupStreet;
     const pickupCityFinalRaw = pickFirstString(parsedPickup.city, pickupCity);
     const pickupPostalFinalRaw = normalizePostalCode(pickFirstString(parsedPickup.postal_code, pickupPostal));
     const pickupCountryFinalRaw = pickFirstString(parsedPickup.country, pickupCountry);
@@ -1814,16 +2573,21 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
     const pickupProvinceFinal = pickupCountryNormalized.province;
     const pickupCountryFinal = pickupCountryNormalized.country;
     const pickupAddressCandidate = String(pickupAddress ?? '').trim();
-    const pickupAddressFinal =
-      (looksLikeStreetAddress(pickupAddressCandidate) ? pickupAddressCandidate : '') ||
-      buildAddressFromBreakdown({
+    const pickupUnitFinal = normalizeWhitespace(String((parsedPickup as unknown as Record<string, unknown>)?.unit ?? ''));
+    const pickupAddressFinal = (() => {
+      const rebuilt = buildAddressFromBreakdown({
         street: pickupStreetFinal,
         number: pickupNumber,
-        city: pickupCityFinal,
-        province: pickupProvinceFinal,
+        unit: pickupUnitFinal,
+        area: '',
+        city: pickupCityFinal || 'Ottawa',
+        province: pickupProvinceFinal || (pickupCityFinal ? pickupProvinceFinal : 'ON'),
         postal_code: pickupPostalFinal,
-        country: pickupCountryFinal,
+        country: pickupCountryFinal || 'Canada',
       });
+      if (looksLikeStreetAddress(rebuilt)) return rebuilt;
+      return looksLikeCleanStreetAddress(pickupAddressCandidate) ? pickupAddressCandidate : '';
+    })();
 
     const dropoffNumber = pickFirstString(
       parsedDropoff.number,
@@ -1851,16 +2615,19 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
     const dropoffCountryNormalized = normalizeProvinceCountry(dropoffProvinceFinalRaw, dropoffCountryFinalRaw);
     const dropoffProvinceFinal = dropoffCountryNormalized.province;
     const dropoffCountryFinal = dropoffCountryNormalized.country;
+    const dropoffUnitFinal = normalizeWhitespace(String((parsedDropoff as unknown as Record<string, unknown>)?.unit ?? ''));
     const dropoffAddressCandidate = String(dropoffAddress ?? '').trim();
     const dropoffAddressFinal =
       (looksLikeStreetAddress(dropoffAddressCandidate) ? dropoffAddressCandidate : '') ||
       buildAddressFromBreakdown({
         street: dropoffStreetFinal,
         number: dropoffNumber,
-        city: dropoffCityFinal,
-        province: dropoffProvinceFinal,
+        unit: dropoffUnitFinal,
+        area: '',
+        city: dropoffCityFinal || 'Ottawa',
+        province: dropoffProvinceFinal || (dropoffCityFinal ? dropoffProvinceFinal : 'ON'),
         postal_code: dropoffPostalFinal,
-        country: dropoffCountryFinal,
+        country: dropoffCountryFinal || 'Canada',
       });
 
     return {
@@ -1880,7 +2647,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       selling_dealership: {
         name: String(sellingName ?? ''),
         phone: String(sellingPhone ?? ''),
-        address: String(sellingAddress ?? ''),
+        address: sellingAddressFinal || String(sellingAddress ?? ''),
       },
       buying_dealership: {
         name: String(buyingName ?? ''),
@@ -1892,10 +2659,12 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
         address: pickupAddressFinal,
         street: pickupStreetFinal,
         number: pickupNumber,
-        city: pickupCityFinal,
-        province: pickupProvinceFinal,
+        unit: pickupUnitFinal,
+        area: '',
+        city: pickupCityFinal || 'Ottawa',
+        province: pickupProvinceFinal || (pickupCityFinal ? pickupProvinceFinal : 'ON'),
         postal_code: pickupPostalFinal,
-        country: pickupCountryFinal,
+        country: pickupCountryFinal || 'Canada',
         phone: String(pickupPhone ?? ''),
       },
       dropoff_location: {
@@ -1904,13 +2673,14 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
         address: dropoffAddressFinal,
         street: dropoffStreetFinal,
         number: dropoffNumber,
-        city: dropoffCityFinal,
-        province: dropoffProvinceFinal,
+        unit: dropoffUnitFinal,
+        area: '',
+        city: dropoffCityFinal || 'Ottawa',
+        province: dropoffProvinceFinal || (dropoffCityFinal ? dropoffProvinceFinal : 'ON'),
         postal_code: dropoffPostalFinal,
-        country: dropoffCountryFinal,
+        country: dropoffCountryFinal || 'Canada',
         lat: dropoffLat,
         lng: dropoffLng,
-        service_area: inferredServiceArea,
       },
       transaction: {
         transaction_id: String(transactionId ?? ''),
@@ -1929,18 +2699,56 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
     };
   };
 
-  const createBlankFormData = () =>
-    initFormData({
+  const createBlankFormData = (): FormData => {
+    return {
       service: { service_type: 'pickup_one_way', vehicle_type: 'standard' },
-      vehicle: {},
-      selling_dealership: {},
-      buying_dealership: {},
-      pickup_location: { ...emptyAddressBreakdown() },
-      dropoff_location: { ...emptyAddressBreakdown(), lat: '', lng: '', service_area: '' },
-      transaction: {},
-      authorization: {},
+      vehicle: {
+        vin: '',
+        year: '',
+        make: '',
+        model: '',
+        transmission: '',
+        odometer_km: '',
+        exterior_color: '',
+      },
+      selling_dealership: {
+        name: '',
+        phone: '',
+        address: '',
+      },
+      buying_dealership: {
+        name: '',
+        phone: '',
+        contact_name: '',
+      },
+      pickup_location: {
+        name: '',
+        address: '',
+        phone: '',
+        ...defaultAddressBreakdown(),
+      },
+      dropoff_location: {
+        name: '',
+        phone: '',
+        address: '',
+        lat: '',
+        lng: '',
+        ...defaultAddressBreakdown(),
+      },
+      transaction: {
+        transaction_id: '',
+        release_form_number: '',
+        release_date: '',
+        arrival_date: '',
+      },
+      authorization: {
+        released_by_name: '',
+        released_to_name: '',
+      },
       dealer_notes: '',
-    });
+      pickup_locked: false,
+    };
+  };
 
   const closeManualForm = () => {
     setIsManualFormOpen(false);
@@ -2103,59 +2911,102 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
 
           <div className="mt-4 rounded-lg border border-gray-200 bg-white p-4">
             <div className="text-sm font-semibold text-gray-700 mb-3">Address Breakdown</div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm text-gray-600 mb-1">Street</label>
+                <label className="block text-sm text-gray-600 mb-1">Street Address</label>
                 <input
-                  value={String(formData.pickup_location.street ?? '')}
-                  onChange={(e) => setPickupAddressFromBreakdown({ street: e.target.value })}
+                  name="pickup_address_line1"
+                  autoComplete="shipping address-line1"
+                  value={pickupStreetLine1Input}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    pickupStreetLine1EditingRef.current = true;
+                    setPickupStreetLine1Input(next);
+                    setPickupStreetSelected(false);
+                    setPickupNumberError(null);
+                    const split = splitLine1ToNumberStreet(next);
+                    setPickupAddressFromBreakdown({ street: split.street, number: split.number, area: '' });
+                  }}
+                  onFocus={() => {
+                    pickupStreetLine1EditingRef.current = true;
+                  }}
+                  onBlur={() => {
+                    pickupStreetLine1EditingRef.current = false;
+                    const normalized = normalizeWhitespace(pickupStreetLine1Input);
+                    setPickupStreetLine1Input(normalized);
+                    const split = splitLine1ToNumberStreet(normalized);
+                    setPickupAddressFromBreakdown({ street: split.street, number: split.number, area: '' });
+                  }}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                  placeholder="10e Avenue (10th Avenue)"
+                  placeholder="8670 10e Avenue"
                 />
+                {pickupNumberError ? <div className="mt-2 text-xs font-medium text-red-600">{pickupNumberError}</div> : null}
               </div>
               <div>
-                <label className="block text-sm text-gray-600 mb-1">Number</label>
+                <label className="block text-sm text-gray-600 mb-1">Suite/Apt</label>
                 <input
-                  value={String(formData.pickup_location.number ?? '')}
-                  onChange={(e) => setPickupAddressFromBreakdown({ number: e.target.value })}
+                  name="pickup_address_line2"
+                  autoComplete="shipping address-line2"
+                  value={String(formData.pickup_location.unit ?? '')}
+                  onChange={(e) => {
+                    setPickupAddressFromBreakdown({ unit: e.target.value, area: '' });
+                  }}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                  placeholder="8670"
+                  placeholder="Leave blank if none"
                 />
               </div>
               <div>
                 <label className="block text-sm text-gray-600 mb-1">City</label>
                 <input
+                  name="pickup_city"
+                  autoComplete="shipping address-level2"
                   value={String(formData.pickup_location.city ?? '')}
-                  onChange={(e) => setPickupAddressFromBreakdown({ city: e.target.value })}
+                  onChange={(e) => {
+                    setPickupAddressFromBreakdown({ city: e.target.value, area: '' });
+                  }}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                  placeholder="Montréal"
+                  placeholder="Montreal"
                 />
+                <div className="mt-1 text-xs text-gray-500">e.g. Montreal</div>
               </div>
               <div>
                 <label className="block text-sm text-gray-600 mb-1">Province</label>
-                <input
+                <select
+                  name="pickup_province"
+                  autoComplete="shipping address-level1"
                   value={String(formData.pickup_location.province ?? '')}
-                  onChange={(e) => setPickupAddressFromBreakdown({ province: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                  placeholder="Quebec (QC)"
-                />
+                  onChange={(e) => {
+                    setPickupAddressFromBreakdown({ province: e.target.value, area: '' });
+                  }}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white"
+                >
+                  <option value="">Select</option>
+                  {CANADA_PROVINCE_OPTIONS.map((p) => (
+                    <option key={p} value={p}>
+                      {CANADA_PROVINCE_FULL_NAME[p] ?? p}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div>
                 <label className="block text-sm text-gray-600 mb-1">Postal Code</label>
                 <input
+                  name="pickup_postal_code"
+                  autoComplete="shipping postal-code"
                   value={String(formData.pickup_location.postal_code ?? '')}
-                  onChange={(e) => setPickupAddressFromBreakdown({ postal_code: e.target.value })}
+                  onChange={(e) => setPickupAddressFromBreakdown({ postal_code: e.target.value, area: '' })}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                  placeholder="H1Z 3B8"
+                  placeholder="K2J 0B6"
                 />
               </div>
               <div>
                 <label className="block text-sm text-gray-600 mb-1">Country</label>
                 <input
-                  value={String(formData.pickup_location.country ?? 'Canada')}
-                  onChange={(e) => setPickupAddressFromBreakdown({ country: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                  placeholder="Canada"
+                  name="pickup_country"
+                  autoComplete="shipping country-name"
+                  value="Canada"
+                  readOnly
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-800"
                 />
               </div>
             </div>
@@ -2164,7 +3015,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
 
         <div className="mb-6">
           <h5 className="text-sm font-semibold text-gray-700 mb-3">Drop-off Location</h5>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm text-gray-600 mb-1">Name</label>
               <input value={String(formData?.dropoff_location?.name ?? '')} onChange={(e) => updateFormField('dropoff_location', 'name', e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
@@ -2178,79 +3029,106 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg"
               />
             </div>
-            <div>
-              <label className="block text-sm text-gray-600 mb-1">Route / Service Area</label>
-              <select
-                ref={routeServiceAreaRef}
-                value={String(formData?.dropoff_location?.service_area ?? '')}
-                onChange={(e) => updateFormField('dropoff_location', 'service_area', e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white"
-              >
-                <option value="">Select service area</option>
-                {SERVICE_AREAS.map((area) => (
-                  <option key={area} value={area}>
-                    {area}
-                  </option>
-                ))}
-              </select>
-            </div>
           </div>
 
           <div className="mt-4 rounded-lg border border-gray-200 bg-white p-4">
             <div className="text-sm font-semibold text-gray-700 mb-3">Address Breakdown</div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm text-gray-600 mb-1">Street</label>
+                <label className="block text-sm text-gray-600 mb-1">Street Address</label>
                 <input
-                  value={String(formData.dropoff_location.street ?? '')}
-                  onChange={(e) => setDropoffAddressFromBreakdown({ street: e.target.value })}
+                  name="dropoff_address_line1"
+                  autoComplete="billing address-line1"
+                  value={dropoffStreetLine1Input}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    dropoffStreetLine1EditingRef.current = true;
+                    setDropoffStreetLine1Input(next);
+                    setDropoffStreetSelected(false);
+                    setDropoffNumberError(null);
+                    const split = splitLine1ToNumberStreet(next);
+                    setDropoffAddressFromBreakdown({ street: split.street, number: split.number, area: '' });
+                  }}
+                  onFocus={() => {
+                    dropoffStreetLine1EditingRef.current = true;
+                  }}
+                  onBlur={() => {
+                    dropoffStreetLine1EditingRef.current = false;
+                    const normalized = normalizeWhitespace(dropoffStreetLine1Input);
+                    setDropoffStreetLine1Input(normalized);
+                    const split = splitLine1ToNumberStreet(normalized);
+                    setDropoffAddressFromBreakdown({ street: split.street, number: split.number, area: '' });
+                  }}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                  placeholder="10e Avenue (10th Avenue)"
+                  placeholder="8670 10e Avenue"
                 />
+                {dropoffNumberError ? <div className="mt-2 text-xs font-medium text-red-600">{dropoffNumberError}</div> : null}
               </div>
               <div>
-                <label className="block text-sm text-gray-600 mb-1">Number</label>
+                <label className="block text-sm text-gray-600 mb-1">Suite/Apt</label>
                 <input
-                  value={String(formData.dropoff_location.number ?? '')}
-                  onChange={(e) => setDropoffAddressFromBreakdown({ number: e.target.value })}
+                  name="dropoff_address_line2"
+                  autoComplete="billing address-line2"
+                  value={String(formData.dropoff_location.unit ?? '')}
+                  onChange={(e) => {
+                    setDropoffAddressFromBreakdown({ unit: e.target.value, area: '' });
+                  }}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                  placeholder="8670"
+                  placeholder="Leave blank if none"
                 />
               </div>
               <div>
                 <label className="block text-sm text-gray-600 mb-1">City</label>
                 <input
+                  name="dropoff_city"
+                  autoComplete="billing address-level2"
                   value={String(formData.dropoff_location.city ?? '')}
-                  onChange={(e) => setDropoffAddressFromBreakdown({ city: e.target.value })}
+                  onChange={(e) => {
+                    setDropoffAddressFromBreakdown({ city: e.target.value, area: '' });
+                  }}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                  placeholder="Montréal"
+                  placeholder="Montreal"
                 />
+                <div className="mt-1 text-xs text-gray-500">e.g. Montreal</div>
               </div>
               <div>
                 <label className="block text-sm text-gray-600 mb-1">Province</label>
-                <input
+                <select
+                  name="dropoff_province"
+                  autoComplete="billing address-level1"
                   value={String(formData.dropoff_location.province ?? '')}
-                  onChange={(e) => setDropoffAddressFromBreakdown({ province: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                  placeholder="Quebec (QC)"
-                />
+                  onChange={(e) => {
+                    setDropoffAddressFromBreakdown({ province: e.target.value, area: '' });
+                  }}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white"
+                >
+                  <option value="">Select</option>
+                  {CANADA_PROVINCE_OPTIONS.map((p) => (
+                    <option key={p} value={p}>
+                      {CANADA_PROVINCE_FULL_NAME[p] ?? p}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div>
                 <label className="block text-sm text-gray-600 mb-1">Postal Code</label>
                 <input
+                  name="dropoff_postal_code"
+                  autoComplete="billing postal-code"
                   value={String(formData.dropoff_location.postal_code ?? '')}
-                  onChange={(e) => setDropoffAddressFromBreakdown({ postal_code: e.target.value })}
+                  onChange={(e) => setDropoffAddressFromBreakdown({ postal_code: e.target.value, area: '' })}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                  placeholder="H1Z 3B8"
+                  placeholder="K2J 0B6"
                 />
               </div>
               <div>
                 <label className="block text-sm text-gray-600 mb-1">Country</label>
                 <input
-                  value={String(formData.dropoff_location.country ?? 'Canada')}
-                  onChange={(e) => setDropoffAddressFromBreakdown({ country: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                  placeholder="Canada"
+                  name="dropoff_country"
+                  autoComplete="billing country-name"
+                  value="Canada"
+                  readOnly
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-800"
                 />
               </div>
             </div>
@@ -2375,6 +3253,8 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       const merged: AddressBreakdown = {
         street: String(next.street ?? current.street ?? ''),
         number: String(next.number ?? current.number ?? ''),
+        unit: String(next.unit ?? (current as unknown as AddressBreakdown).unit ?? ''),
+        area: String(next.area ?? (current as unknown as AddressBreakdown).area ?? ''),
         city: String(next.city ?? current.city ?? ''),
         province: String(next.province ?? current.province ?? ''),
         postal_code: normalizePostalCode(String(next.postal_code ?? current.postal_code ?? '')),
@@ -2399,6 +3279,8 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       const merged: AddressBreakdown = {
         street: String(next.street ?? current.street ?? ''),
         number: String(next.number ?? current.number ?? ''),
+        unit: String(next.unit ?? (current as unknown as AddressBreakdown).unit ?? ''),
+        area: String(next.area ?? (current as unknown as AddressBreakdown).area ?? ''),
         city: String(next.city ?? current.city ?? ''),
         province: String(next.province ?? current.province ?? ''),
         postal_code: normalizePostalCode(String(next.postal_code ?? current.postal_code ?? '')),
@@ -2468,22 +3350,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       return;
     }
 
-    const allowedExtensions = ['.pdf', '.jpg', '.jpeg', '.png'];
     const maxBytes = 10 * 1024 * 1024;
-
-    const invalidType = nextFiles.find((f) => {
-      const lowerName = String(f.name ?? '').toLowerCase();
-      return !allowedExtensions.some((ext) => lowerName.endsWith(ext));
-    });
-
-    if (invalidType) {
-      clearPersisted();
-      setUploadedFiles([]);
-      setFormData(null);
-      setSubmitMessage('Unsupported file type. Please upload a PDF, JPG, or PNG.');
-      setSubmitError(true);
-      return;
-    }
 
     const tooLarge = nextFiles.find((f) => f.size > maxBytes);
     if (tooLarge) {
@@ -2501,7 +3368,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       size: formatFileSize(file.size),
       type: normalizeMimeType(file.name, file.type),
       file,
-      docType: 'unknown',
+      docType: 'release_form',
     }));
 
     clearPersisted();
@@ -2510,35 +3377,17 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
     setFormData(null);
     setDraftDocCount(null);
     setActiveDraftId(null);
+    autoExtractTriggeredRef.current = false;
     setUploadedFiles((prev) => [...mapped, ...prev]);
   };
 
   const removeFile = (id: string) => {
+    autoExtractTriggeredRef.current = false;
     setUploadedFiles((prev) => prev.filter((file) => file.id !== id));
   };
 
   const onButtonClick = () => {
     fileInputRef.current?.click();
-  };
-
-  const openRouteRequiredModal = () => {
-    setSubmitMessage(null);
-    setSubmitError(false);
-    setIsRouteRequiredOpen(true);
-  };
-
-  const closeRouteRequiredModal = () => {
-    setIsRouteRequiredOpen(false);
-    window.setTimeout(() => {
-      const el = routeServiceAreaRef.current;
-      if (!el) return;
-      try {
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        el.focus();
-      } catch {
-        // ignore
-      }
-    }, 0);
   };
 
   const closeDropoffValidationModal = () => {
@@ -2550,6 +3399,13 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
 
     if (formData) {
       if (isManualFormOpen) setIsManualFormOpen(false);
+      const pickupStreet = String(formData.pickup_location.street ?? '').trim();
+      const pickupNumber = String(formData.pickup_location.number ?? '').trim();
+      const pickupCity = String(formData.pickup_location.city ?? '').trim();
+      const pickupProvince = String(formData.pickup_location.province ?? '').trim();
+      const pickupPostal = String(formData.pickup_location.postal_code ?? '').trim();
+      const pickupCountry = String(formData.pickup_location.country ?? '').trim();
+
       const dropoffStreet = String(formData.dropoff_location.street ?? '').trim();
       const dropoffNumber = String(formData.dropoff_location.number ?? '').trim();
       const dropoffCity = String(formData.dropoff_location.city ?? '').trim();
@@ -2558,12 +3414,40 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       const dropoffCountry = String(formData.dropoff_location.country ?? '').trim();
 
       const missingFields: string[] = [];
-      if (!dropoffStreet) missingFields.push('Street');
-      if (!dropoffNumber) missingFields.push('Number');
-      if (!dropoffCity) missingFields.push('City');
+      if (!pickupNumber) missingFields.push('Pickup Street Address');
+      if (!pickupStreet) missingFields.push('Pickup Street Address');
+      if (!pickupCity) missingFields.push('Pickup City');
+      if (!pickupProvince) missingFields.push('Pickup Province');
+      if (!pickupPostal) missingFields.push('Pickup Postal Code');
+      if (!pickupCountry) missingFields.push('Pickup Country');
+
+      if (!dropoffNumber) missingFields.push('Drop-off Street Address');
+      if (!dropoffStreet) missingFields.push('Drop-off Street Address');
+      if (!dropoffCity) missingFields.push('Drop-off City');
       if (!dropoffProvince) missingFields.push('Province');
       if (!dropoffPostal) missingFields.push('Postal Code');
       if (!dropoffCountry) missingFields.push('Country');
+
+      if (
+        pickupPostal &&
+        (!isValidCanadianPostalCode(pickupPostal) || !postalPrefixAllowsProvince(pickupPostal, pickupProvince))
+      ) {
+        missingFields.push('Valid Pickup Postal Code');
+      }
+
+      if (dropoffPostal && (!isValidCanadianPostalCode(dropoffPostal) || !postalPrefixAllowsProvince(dropoffPostal, dropoffProvince))) {
+        missingFields.push('Valid Postal Code');
+      }
+
+      const isPickupBreakdownComplete =
+        !!pickupStreet &&
+        !!pickupNumber &&
+        !!pickupCity &&
+        !!pickupProvince &&
+        !!pickupPostal &&
+        !!pickupCountry &&
+        isValidCanadianPostalCode(pickupPostal) &&
+        postalPrefixAllowsProvince(pickupPostal, pickupProvince);
 
       const isDropoffBreakdownComplete =
         !!dropoffStreet &&
@@ -2571,9 +3455,11 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
         !!dropoffCity &&
         !!dropoffProvince &&
         !!dropoffPostal &&
-        !!dropoffCountry;
+        !!dropoffCountry &&
+        isValidCanadianPostalCode(dropoffPostal) &&
+        postalPrefixAllowsProvince(dropoffPostal, dropoffProvince);
 
-      if (!isDropoffBreakdownComplete) {
+      if (!isPickupBreakdownComplete || !isDropoffBreakdownComplete) {
         if (isManualFormOpen) setIsManualFormOpen(false);
         setDropoffValidationMissingFields(missingFields);
         setIsDropoffValidationOpen(true);
@@ -2582,6 +3468,14 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
 
       setShowCostEstimate(false);
 
+      if (!isLoggedIn) {
+        try {
+          await saveDraftBeforeSignIn({ formData, costData });
+        } catch {
+          // ignore
+        }
+      }
+
       const pickupLat = Number(dealershipCoords?.lat);
       const pickupLng = Number(dealershipCoords?.lng);
       const dropoffLatRaw = String(formData?.dropoff_location?.lat ?? '').trim();
@@ -2589,9 +3483,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       const dropoffLat = Number(dropoffLatRaw);
       const dropoffLng = Number(dropoffLngRaw);
 
-      const pickupCity = String(formData?.pickup_location?.city ?? '').trim();
-      const selectedServiceArea = String(formData?.dropoff_location?.service_area ?? '').trim();
-      const pricingArea = selectedServiceArea || pickupCity;
+      const pricingArea = dropoffCity || pickupCity;
       const pickupAddressBase = String(formData?.pickup_location?.address ?? '').trim();
       const pickupName = String(formData?.pickup_location?.name ?? '').trim();
       const pickupLookup = `${pickupAddressBase} ${pickupName} ${pickupCity}`.trim();
@@ -2617,6 +3509,13 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
             ? { ...estimate, cost: official.total_price, pricingCity: official.city, pricingStatus: 'official' as const }
             : { ...estimate, pricingStatus: 'estimated' as const };
           setCostData(nextCost);
+          if (!isLoggedIn) {
+            try {
+              await saveDraftBeforeSignIn({ formData, costData: nextCost });
+            } catch {
+              // ignore
+            }
+          }
           if (isManualFormOpen) setIsManualFormOpen(false);
           setShowCostEstimate(true);
           return;
@@ -2624,14 +3523,23 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       }
 
       if (official) {
-        setCostData({ distance: 0, cost: official.total_price, pricingCity: official.city, pricingStatus: 'official' as const });
+        const nextCost = { distance: 0, cost: official.total_price, pricingCity: official.city, pricingStatus: 'official' as const };
+        setCostData(nextCost);
+        if (!isLoggedIn) {
+          try {
+            await saveDraftBeforeSignIn({ formData, costData: nextCost });
+          } catch {
+            // ignore
+          }
+        }
         if (isManualFormOpen) setIsManualFormOpen(false);
         setShowCostEstimate(true);
         return;
       }
 
       if (isManualFormOpen) setIsManualFormOpen(false);
-      openRouteRequiredModal();
+      setSubmitMessage('Unable to calculate a quote. Please ensure both Pickup and Drop-off addresses are complete and the map has valid coordinates.');
+      setSubmitError(true);
       return;
     }
 
@@ -2641,6 +3549,8 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       onButtonClick();
       return;
     }
+
+    
 
     if (uploadedFiles.length > 5) {
       setSubmitMessage('You can upload up to 5 release forms at a time.');
@@ -2726,8 +3636,8 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
         const dropoffLng = Number(dropoffLngStr);
 
         const pickupCity = String(extracted?.pickup_location?.city ?? '').trim();
-        const selectedServiceArea = String(extracted?.dropoff_location?.service_area ?? '').trim();
-        const pricingArea = selectedServiceArea || pickupCity;
+        const dropoffCity = String(extracted?.dropoff_location?.city ?? '').trim();
+        const pricingArea = dropoffCity || pickupCity;
         const pickupAddress = String(extracted?.pickup_location?.address ?? '').trim();
         const pickupName = String(extracted?.pickup_location?.name ?? '').trim();
 
@@ -2796,9 +3706,10 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
             type: normalizeMimeType(f.name, f.type),
             size: f.file.size,
             base64: await fileToBase64(f.file),
+            docType: f.docType,
           };
 
-          const res = await fetch('https://primary-production-6722.up.railway.app/webhook/upload', {
+          const res = await fetch(extractionUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ files: [filePayload] }),
@@ -2885,18 +3796,10 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
     setSubmitError(false);
 
     try {
-      const filesWithBase64 = await Promise.all(
-        uploadedFiles.map(async (f) => ({
-          name: f.name,
-          type: f.type,
-          size: f.file.size,
-          base64: await fileToBase64(f.file),
-          docType: f.docType,
-        }))
-      );
-      const files = filesWithBase64.map((f) => ({ name: f.name, type: f.type, size: f.size, base64: f.base64 }));
+      const filesWithBase64 = await Promise.all(uploadedFiles.map(async (f) => prepareFileForExtraction(f)));
+      const files = filesWithBase64.map((f) => ({ name: f.name, type: f.type, size: f.size, base64: f.base64, docType: f.docType }));
 
-      const res = await fetch('https://primary-production-6722.up.railway.app/webhook/upload', {
+      const res = await fetch(extractionUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2906,19 +3809,87 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
 
       if (!res.ok) {
         const text = await res.text().catch(() => '');
-        throw new Error(text || `Upload failed (${res.status})`);
+        const parsed = (() => {
+          try {
+            return text ? (JSON.parse(text) as unknown) : null;
+          } catch {
+            return null;
+          }
+        })();
+        const serverMsg = isRecord(parsed) ? readString((parsed as Record<string, unknown>).message) : '';
+        if (serverMsg && /workflow execution failed/i.test(serverMsg)) {
+          throw new Error(`Extraction failed (workflow error, ${res.status}). Please try a clearer scan or a JPG.`);
+        }
+        throw new Error(serverMsg ? `Extraction failed (${res.status}): ${serverMsg}` : text || `Upload failed (${res.status})`);
       }
 
       const data = await res.json().catch(() => null);
       const output = extractWebhookOutput(data);
       const extracted = initFormData(output);
-      setFormData(extracted);
+      if (!extracted) {
+        const serverMsg =
+          (isRecord(data) ? readString((data as Record<string, unknown>).message) : '') ||
+          (isRecord(output) ? readString((output as Record<string, unknown>).message) : '');
+        throw new Error(
+          serverMsg && /workflow execution failed/i.test(serverMsg)
+            ? 'Extraction failed (workflow error). Please try again with a clearer image/PDF, or try converting the image to JPG.'
+            : serverMsg
+              ? `Extraction failed: ${serverMsg}`
+              : 'Extraction failed. The server returned no usable data.'
+        );
+      }
+      const decodedVin = (() => {
+        const vin = String(extracted?.vehicle?.vin ?? '').trim();
+        return vin && /^[A-HJ-NPR-Z0-9]{17}$/i.test(vin) ? vin.toUpperCase() : '';
+      })();
+      const needYmm = !String(extracted?.vehicle?.year ?? '').trim() || !String(extracted?.vehicle?.make ?? '').trim() || !String(extracted?.vehicle?.model ?? '').trim();
+      const vinInfo = decodedVin && needYmm ? await decodeVinViaNhtsa(decodedVin).catch(() => null) : null;
+      const extractedDecoded: FormData | null = vinInfo
+        ? {
+            ...extracted,
+            vehicle: {
+              ...extracted.vehicle,
+              year: String(extracted.vehicle.year ?? '').trim() || String(vinInfo.year ?? '').trim(),
+              make: String(extracted.vehicle.make ?? '').trim() || String(vinInfo.make ?? '').trim(),
+              model: String(extracted.vehicle.model ?? '').trim() || String(vinInfo.model ?? '').trim(),
+            },
+          }
+        : extracted;
+      const extractedWithRules: FormData | null = extractedDecoded
+        ? {
+            ...extractedDecoded,
+            pickup_locked: true,
+            dropoff_location: {
+              ...extractedDecoded.dropoff_location,
+              name: '',
+              phone: '',
+              address: '',
+              street: '',
+              number: '',
+              unit: '',
+              area: '',
+              city: '',
+              province: '',
+              postal_code: '',
+              country: 'Canada',
+              lat: '',
+              lng: '',
+            },
+          }
+        : null;
 
-      const pickupCity = String(extracted?.pickup_location?.city ?? '').trim();
-      const selectedServiceArea = String(extracted?.dropoff_location?.service_area ?? '').trim();
-      const pricingArea = selectedServiceArea || pickupCity;
-      const pickupAddressBase = String(extracted?.pickup_location?.address ?? '').trim();
-      const pickupName = String(extracted?.pickup_location?.name ?? '').trim();
+      setFormData(extractedWithRules);
+
+      if (extractedWithRules) {
+        setPickupStreetSelected(Boolean(String(extractedWithRules?.pickup_location?.street ?? '').trim()));
+        setDropoffStreetSelected(Boolean(String(extractedWithRules?.dropoff_location?.street ?? '').trim()));
+      }
+
+      const pickupCity = String(extractedWithRules?.pickup_location?.city ?? '').trim();
+      const dropoffCity = String(extractedWithRules?.dropoff_location?.city ?? '').trim();
+      const pricingArea = dropoffCity || pickupCity;
+      const pickupAddressBase = String(extractedWithRules?.pickup_location?.address ?? '').trim();
+      const pickupName = String(extractedWithRules?.pickup_location?.name ?? '').trim();
       const pickupLookup = `${pickupAddressBase} ${pickupName} ${pickupCity}`.trim();
 
       const extractedOfficial =
@@ -2939,12 +3910,23 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       setSubmitMessage('Document extracted successfully. Please review the details then click View Quote Now.');
       setSubmitError(false);
     } catch (err) {
+      console.error(err);
       setSubmitMessage(err instanceof Error ? err.message : 'Upload failed');
       setSubmitError(true);
     } finally {
       setIsSubmitting(false);
     }
   };
+
+  useEffect(() => {
+    if (autoExtractTriggeredRef.current) return;
+    if (isSubmitting) return;
+    if (formData) return;
+    if (uploadedFiles.length === 0) return;
+
+    autoExtractTriggeredRef.current = true;
+    void handleSubmitDocuments();
+  }, [uploadedFiles, isSubmitting, formData]);
 
   const handleProceedWithCost = async () => {
     setShowCostEstimate(false);
@@ -3122,7 +4104,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
       const finalReceiptText = responseText ? responseText : fallbackReceipt;
       const normalizedReceipt = String(finalReceiptText).replace(/\r\n/g, '\n').trim();
 
-      const routeArea = String(costData?.pricingCity ?? formData?.dropoff_location?.service_area ?? formData?.pickup_location?.city ?? '').trim();
+      const routeArea = String(costData?.pricingCity ?? formData?.dropoff_location?.city ?? formData?.pickup_location?.city ?? '').trim();
       const subtotal = Number(costData?.cost ?? 0) + loadingFee;
       const totals = computeTotals(subtotal, routeArea);
       const orderCode = makeLocalOrderId();
@@ -3253,43 +4235,6 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
 
   return (
     <div>
-      {isRouteRequiredOpen && typeof document !== 'undefined'
-        ? createPortal(
-            <div
-              className="fixed inset-0 z-[10006] flex items-center justify-center p-4"
-              role="dialog"
-              aria-modal="true"
-              onMouseDown={(e) => {
-                if (e.target === e.currentTarget) {
-                  setIsRouteRequiredOpen(false);
-                }
-              }}
-            >
-              <div className="absolute inset-0 bg-black/50 backdrop-blur-sm"></div>
-              <div className="relative w-full max-w-md rounded-2xl bg-white shadow-2xl border border-gray-200 overflow-hidden">
-                <div className="px-6 py-5 border-b border-gray-100">
-                  <div className="text-base font-semibold text-gray-900">Route / Service Area required</div>
-                  <div className="mt-1 text-sm text-gray-600">
-                    Please select a Route / Service Area (or set drop-off coordinates) and try again.
-                  </div>
-                </div>
-                <div className="px-6 py-5">
-                  <div className="flex justify-end">
-                    <button
-                      type="button"
-                      onClick={closeRouteRequiredModal}
-                      className="inline-flex justify-center rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-gray-800 transition-colors"
-                    >
-                      Back
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>,
-            document.body
-          )
-        : null}
-
       {isDropoffValidationOpen && typeof document !== 'undefined'
         ? createPortal(
             <div
@@ -3364,7 +4309,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
 
                 <div className="p-6 space-y-5 overflow-y-auto ocean-scrollbar" style={{ maxHeight: 'calc(85vh - 72px - 88px)' }}>
                   {(() => {
-                    const routeArea = String(costData?.pricingCity ?? formData?.dropoff_location?.service_area ?? formData?.pickup_location?.city ?? '').trim();
+                    const routeArea = String(costData?.pricingCity ?? formData?.dropoff_location?.city ?? formData?.pickup_location?.city ?? '').trim();
                     const serviceTypeLabel =
                       String(formData?.service?.service_type ?? '') === 'delivery_one_way' ? 'Delivery (one-way)' : 'Pickup (one-way)';
                     const fulfillment = routeArea.toLowerCase().includes('montreal') ? 'As fast as 1–2 business days' : '3–8 business days';
@@ -3381,7 +4326,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
                     <div className="text-sm font-semibold text-gray-900">Order details</div>
                     <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
                       <div className="rounded-lg bg-gray-50 border border-gray-200 p-3">
-                        <div className="text-xs font-medium text-gray-500">Route / Service Area</div>
+                        <div className="text-xs font-medium text-gray-500">Pricing city</div>
                         <div className="mt-1 font-semibold text-gray-900">{routeArea || '-'}</div>
                         <div className="mt-1 text-xs text-gray-600">Estimated delivery: {fulfillment}</div>
                       </div>
@@ -3408,7 +4353,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
               })()}
 
               {(() => {
-                const routeArea = String(costData?.pricingCity ?? formData?.dropoff_location?.service_area ?? formData?.pickup_location?.city ?? '').trim();
+                const routeArea = String(costData?.pricingCity ?? formData?.dropoff_location?.city ?? formData?.pickup_location?.city ?? '').trim();
                 const loadingFee = vehicleCondition === 'does_not_run_or_drive' ? 50 : 0;
                 const subtotal = Number(costData?.cost ?? 0) + loadingFee;
                 const totals = computeTotals(subtotal, routeArea);
@@ -3702,7 +4647,7 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
                 <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
                   <div className="text-xs font-medium text-gray-500">Pickup location (pricing)</div>
                   <div className="mt-1 text-sm font-semibold text-gray-900">
-                    {String(costData?.pricingCity ?? formData?.pickup_location?.city ?? formData?.dropoff_location?.service_area ?? '-')}
+                    {String(costData?.pricingCity ?? formData?.pickup_location?.city ?? formData?.dropoff_location?.city ?? '-')}
                   </div>
                 </div>
                 <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
@@ -3824,7 +4769,6 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
         multiple
         onChange={handleChange}
         className="hidden"
-        accept=".pdf,.jpg,.jpeg,.png"
       />
 
       {uploadedFiles.length === 0 && !formData && (
@@ -4051,43 +4995,10 @@ export default function FileUploadSection({ hideHeader = false, onContinueToSign
                     </div>
                   </div>
                   <div className="flex flex-col sm:flex-row sm:items-center justify-end gap-2">
-                    <select
-                      value={file.docType}
-                      onChange={(e) => {
-                        const v = e.target.value as UploadedFile['docType'];
-                        setUploadedFiles((prev) => prev.map((x) => (x.id === file.id ? { ...x, docType: v } : x)));
-                      }}
-                      className="w-full sm:w-auto rounded-lg border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm"
-                      style={{ color: '#111827', backgroundColor: '#ffffff' }}
-                    >
-                      <option value="unknown" className="bg-white text-gray-900" style={{ color: '#111827', backgroundColor: '#ffffff' }}>
-                        Select document type
-                      </option>
-                      <option value="release_form" className="bg-white text-gray-900" style={{ color: '#111827', backgroundColor: '#ffffff' }}>
-                        Vehicle Release Form (required)
-                      </option>
-                      <option value="work_order" className="bg-white text-gray-900" style={{ color: '#111827', backgroundColor: '#ffffff' }}>
-                        Work Order (required)
-                      </option>
-                      <option value="bill_of_sale" className="bg-white text-gray-900" style={{ color: '#111827', backgroundColor: '#ffffff' }}>
-                        Bill of Sale (optional)
-                      </option>
-                      <option value="photo" className="bg-white text-gray-900" style={{ color: '#111827', backgroundColor: '#ffffff' }}>
-                        Photos (optional)
-                      </option>
-                      <option value="notes" className="bg-white text-gray-900" style={{ color: '#111827', backgroundColor: '#ffffff' }}>
-                        Notes (optional)
-                      </option>
-                      <option value="other" className="bg-white text-gray-900" style={{ color: '#111827', backgroundColor: '#ffffff' }}>
-                        Other (optional)
-                      </option>
-                    </select>
-                    {file.docType === 'release_form' || file.docType === 'work_order' ? (
-                      <div className="inline-flex items-center gap-2 rounded-full bg-green-50 border border-green-200 px-3 py-1 text-xs font-semibold text-green-700">
-                        <CheckCircle className="w-4 h-4" />
-                        Required
-                      </div>
-                    ) : null}
+                    <div className="inline-flex items-center gap-2 rounded-full bg-green-50 border border-green-200 px-3 py-1 text-xs font-semibold text-green-700">
+                      <CheckCircle className="w-4 h-4" />
+                      Required
+                    </div>
                     <button
                       type="button"
                       onClick={() => removeFile(file.id)}

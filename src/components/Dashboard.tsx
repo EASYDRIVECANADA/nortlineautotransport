@@ -22,6 +22,8 @@ interface DashboardProps {
 }
 
 export default function Dashboard({ onLogout }: DashboardProps) {
+  const DRAFTS_STORAGE_KEY = 'ed_checkout_drafts';
+  const DRAFTS_STORAGE_KEY_V1 = 'ed_checkout_drafts_v1';
   const [isLogoutOpen, setIsLogoutOpen] = useState(false);
   const [isDeleteDraftOpen, setIsDeleteDraftOpen] = useState(false);
   const [deleteDraftId, setDeleteDraftId] = useState<string | null>(null);
@@ -37,9 +39,26 @@ export default function Dashboard({ onLogout }: DashboardProps) {
 
   const loadDrafts = () => {
     try {
-      const raw = localStorage.getItem('ed_checkout_drafts');
+      const raw = localStorage.getItem(DRAFTS_STORAGE_KEY);
       const parsed = raw ? (JSON.parse(raw) as unknown) : null;
-      setDrafts(Array.isArray(parsed) ? (parsed as CheckoutDraft[]) : []);
+      const primary = Array.isArray(parsed) ? (parsed as CheckoutDraft[]) : [];
+      if (primary.length) {
+        setDrafts(primary);
+        return;
+      }
+
+      const rawV1 = localStorage.getItem(DRAFTS_STORAGE_KEY_V1);
+      const parsedV1 = rawV1 ? (JSON.parse(rawV1) as unknown) : null;
+      const legacy = Array.isArray(parsedV1) ? (parsedV1 as CheckoutDraft[]) : [];
+      setDrafts(legacy);
+
+      if (legacy.length) {
+        try {
+          localStorage.setItem(DRAFTS_STORAGE_KEY, JSON.stringify(legacy));
+        } catch {
+          // ignore
+        }
+      }
     } catch {
       setDrafts([]);
     }
@@ -64,7 +83,8 @@ export default function Dashboard({ onLogout }: DashboardProps) {
     const next = drafts.filter((d) => d.id !== id);
     setDrafts(next);
     try {
-      localStorage.setItem('ed_checkout_drafts', JSON.stringify(next));
+      localStorage.setItem(DRAFTS_STORAGE_KEY, JSON.stringify(next));
+      localStorage.setItem(DRAFTS_STORAGE_KEY_V1, JSON.stringify(next));
     } catch {
       // ignore
     }
@@ -130,7 +150,7 @@ export default function Dashboard({ onLogout }: DashboardProps) {
   useEffect(() => {
     loadDrafts();
     const onStorage = (e: StorageEvent) => {
-      if (e.key === 'ed_checkout_drafts') loadDrafts();
+      if (e.key === DRAFTS_STORAGE_KEY || e.key === DRAFTS_STORAGE_KEY_V1) loadDrafts();
     };
     const onDraftsUpdated = () => loadDrafts();
     window.addEventListener('storage', onStorage);
@@ -198,10 +218,11 @@ export default function Dashboard({ onLogout }: DashboardProps) {
 
                     const pricingCity = costData && typeof costData.pricingCity === 'string' ? costData.pricingCity : null;
                     const dropoffLocation = formData && isRecord(formData.dropoff_location) ? formData.dropoff_location : null;
-                    const serviceArea = dropoffLocation && typeof dropoffLocation.service_area === 'string' ? dropoffLocation.service_area : null;
+                    const dropoffCity = dropoffLocation && typeof dropoffLocation.city === 'string' ? dropoffLocation.city : null;
+                    const pickupLocation = formData && isRecord(formData.pickup_location) ? formData.pickup_location : null;
+                    const pickupCity = pickupLocation && typeof pickupLocation.city === 'string' ? pickupLocation.city : null;
 
-                    const label =
-                      pricingCity ? String(pricingCity) : serviceArea ? String(serviceArea) : '-';
+                    const label = pricingCity ? String(pricingCity) : dropoffCity ? String(dropoffCity) : pickupCity ? String(pickupCity) : '-';
 
                     const costValue = costData && typeof costData.cost === 'number' ? costData.cost : null;
                     const total =
@@ -521,8 +542,10 @@ export default function Dashboard({ onLogout }: DashboardProps) {
                       const formData = isRecord(d.formData) ? (d.formData as Record<string, unknown>) : null;
                       const pricingCity = costData && typeof costData.pricingCity === 'string' ? costData.pricingCity : null;
                       const dropoffLocation = formData && isRecord(formData.dropoff_location) ? (formData.dropoff_location as Record<string, unknown>) : null;
-                      const serviceArea = dropoffLocation && typeof dropoffLocation.service_area === 'string' ? dropoffLocation.service_area : null;
-                      const label = pricingCity ? String(pricingCity) : serviceArea ? String(serviceArea) : '-';
+                      const dropoffCity = dropoffLocation && typeof dropoffLocation.city === 'string' ? dropoffLocation.city : null;
+                      const pickupLocation = formData && isRecord(formData.pickup_location) ? (formData.pickup_location as Record<string, unknown>) : null;
+                      const pickupCity = pickupLocation && typeof pickupLocation.city === 'string' ? pickupLocation.city : null;
+                      const label = pricingCity ? String(pricingCity) : dropoffCity ? String(dropoffCity) : pickupCity ? String(pickupCity) : '-';
                       const costValue = costData ? readNumber(costData.cost) : NaN;
                       const total = Number.isFinite(costValue) ? `$${costValue}` : '';
                       return (
