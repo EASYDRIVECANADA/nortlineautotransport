@@ -3,9 +3,13 @@ import { KeyRound, Lock, Pencil, Plus, ShieldCheck, Unlock, Users } from 'lucide
 import AdminPanel from './AdminPanel';
 import { supabase } from '../lib/supabaseClient';
 import {
+  DEFAULT_DISTANCE_RATE_PER_KM,
   OFFICIAL_CITY_TOTAL_PRICES,
+  clearDistanceRatePerKm,
   clearPricingOverrides,
+  getDistanceRatePerKm,
   getPricingOverrides,
+  setDistanceRatePerKm,
   setPricingOverrides,
 } from '../pricing/pricingTable';
 
@@ -117,6 +121,7 @@ export default function AdminPortal({ onExit }: AdminPortalProps) {
   const [resetEmpConfirm, setResetEmpConfirm] = useState('');
 
   const [pricingDraft, setPricingDraft] = useState<Record<string, string>>({});
+  const [distanceRateDraft, setDistanceRateDraft] = useState('');
 
   const readLocalEmployees = (): LocalEmployeeRecord[] => {
     try {
@@ -398,6 +403,8 @@ export default function AdminPortal({ onExit }: AdminPortalProps) {
       next[row.city] = Number.isFinite(override) ? String(override) : '';
     }
     setPricingDraft(next);
+    const rate = getDistanceRatePerKm();
+    setDistanceRateDraft(Number.isFinite(rate) ? String(rate) : String(DEFAULT_DISTANCE_RATE_PER_KM));
     setShowPricing(true);
   };
 
@@ -405,6 +412,19 @@ export default function AdminPortal({ onExit }: AdminPortalProps) {
     if (!session || session.role !== 'admin') return;
     setMessage(null);
     setError(null);
+
+    const rawRate = String(distanceRateDraft ?? '').trim();
+    if (rawRate) {
+      const numRate = Number(rawRate);
+      if (!Number.isFinite(numRate) || numRate <= 0) {
+        setError('Invalid distance rate ($/km).');
+        return;
+      }
+      setDistanceRatePerKm(numRate);
+    } else {
+      clearDistanceRatePerKm();
+    }
+
     const next: Record<string, number> = {};
     for (const row of OFFICIAL_CITY_TOTAL_PRICES) {
       const raw = String(pricingDraft[row.city] ?? '').trim();
@@ -424,12 +444,14 @@ export default function AdminPortal({ onExit }: AdminPortalProps) {
     if (!session || session.role !== 'admin') return;
     setMessage(null);
     setError(null);
+    clearDistanceRatePerKm();
     clearPricingOverrides();
     const next: Record<string, string> = {};
     for (const row of OFFICIAL_CITY_TOTAL_PRICES) {
       next[row.city] = '';
     }
     setPricingDraft(next);
+    setDistanceRateDraft(String(DEFAULT_DISTANCE_RATE_PER_KM));
     setMessage('Pricing reset to defaults.');
   };
 
@@ -1068,6 +1090,29 @@ export default function AdminPortal({ onExit }: AdminPortalProps) {
 
                 {showPricing ? (
                   <>
+                    <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                      <div className="text-sm font-semibold text-gray-900">Distance-based pricing</div>
+                      <div className="mt-1 text-xs text-gray-600">Default rate: ${DEFAULT_DISTANCE_RATE_PER_KM}/km (admin can override).</div>
+                      <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div className="rounded-xl border border-gray-200 bg-white p-3">
+                          <div className="text-xs font-semibold text-gray-700">Rate ($/km)</div>
+                          <div className="mt-1 text-xs text-gray-500">Leave blank to reset to default.</div>
+                          <input
+                            value={distanceRateDraft}
+                            onChange={(e) => setDistanceRateDraft(e.target.value)}
+                            inputMode="decimal"
+                            className="mt-2 w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm"
+                            placeholder={String(DEFAULT_DISTANCE_RATE_PER_KM)}
+                          />
+                        </div>
+                        <div className="rounded-xl border border-gray-200 bg-white p-3">
+                          <div className="text-xs font-semibold text-gray-700">Minimum charge</div>
+                          <div className="mt-1 text-xs text-gray-500">Applied to all quotes.</div>
+                          <div className="mt-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm font-semibold text-gray-800">$150</div>
+                        </div>
+                      </div>
+                    </div>
+
                     <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
                       <div className="text-sm font-semibold text-gray-900">Official city total prices</div>
                       <div className="mt-1 text-xs text-gray-600">Leave blank to use default. Changes apply immediately to quotes.</div>

@@ -3,22 +3,62 @@ export type VehicleType = 'standard';
 
 export const QUOTE_MARKUP = 35;
 
+export const DEFAULT_DISTANCE_RATE_PER_KM = 1.12;
+
 const PRICING_OVERRIDES_KEY = 'ed_pricing_overrides';
+const DISTANCE_RATE_KEY = 'ed_pricing_distance_rate';
 const STAFF_SESSION_KEY = 'ed_staff_session';
+
+const isStaffAdminSession = () => {
+  try {
+    if (typeof window === 'undefined') return false;
+    const rawSession = window.localStorage.getItem(STAFF_SESSION_KEY);
+    const parsed = rawSession ? (JSON.parse(rawSession) as unknown) : null;
+    const obj = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+    const role = String(obj?.role ?? '').trim().toLowerCase();
+    return role === 'admin';
+  } catch {
+    return false;
+  }
+};
+
+export const getDistanceRatePerKm = (): number => {
+  try {
+    if (typeof window === 'undefined') return DEFAULT_DISTANCE_RATE_PER_KM;
+    const raw = window.localStorage.getItem(DISTANCE_RATE_KEY);
+    const parsed = raw ? Number(raw) : NaN;
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_DISTANCE_RATE_PER_KM;
+  } catch {
+    return DEFAULT_DISTANCE_RATE_PER_KM;
+  }
+};
+
+export const setDistanceRatePerKm = (next: number) => {
+  try {
+    if (typeof window === 'undefined') return;
+    if (!isStaffAdminSession()) return;
+    if (!Number.isFinite(next) || next <= 0) return;
+    window.localStorage.setItem(DISTANCE_RATE_KEY, String(next));
+  } catch {
+    // ignore
+  }
+};
+
+export const clearDistanceRatePerKm = () => {
+  try {
+    if (typeof window === 'undefined') return;
+    if (!isStaffAdminSession()) return;
+    window.localStorage.removeItem(DISTANCE_RATE_KEY);
+  } catch {
+    // ignore
+  }
+};
 
 export const getPricingOverrides = (): Record<string, number> => {
   try {
     if (typeof window === 'undefined') return {};
 
-    try {
-      const rawSession = window.localStorage.getItem(STAFF_SESSION_KEY);
-      const parsed = rawSession ? (JSON.parse(rawSession) as unknown) : null;
-      const obj = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
-      const role = String(obj?.role ?? '').trim().toLowerCase();
-      if (role !== 'admin') return {};
-    } catch {
-      return {};
-    }
+    if (!isStaffAdminSession()) return {};
 
     const raw = window.localStorage.getItem(PRICING_OVERRIDES_KEY);
     const parsed = raw ? (JSON.parse(raw) as unknown) : null;

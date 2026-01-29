@@ -8,8 +8,7 @@ import markerIcon from 'leaflet/dist/images/marker-icon.png';
 import markerShadow from 'leaflet/dist/images/marker-shadow.png';
 import {
   getFulfillmentDaysForRoute,
-  getOfficialCityPriceForAddress,
-  getOfficialCityPriceForServiceArea,
+  getDistanceRatePerKm,
   type ServiceType,
   type VehicleType,
 } from '../pricing/pricingTable';
@@ -583,6 +582,17 @@ type CostData = {
   pricingStatus?: 'official' | 'estimated';
 };
 
+const minimizeCostDataForStorage = (input: CostData | null | undefined): CostData | null => {
+  if (!input) return null;
+  return {
+    distance: input.distance,
+    cost: input.cost,
+    duration: input.duration,
+    pricingCity: input.pricingCity,
+    pricingStatus: input.pricingStatus,
+  };
+};
+
 type FormData = {
   service: {
     service_type: ServiceType;
@@ -652,6 +662,13 @@ type FormData = {
   transaction_id?: string;
   release_form_number?: string;
   arrival_date?: string;
+};
+
+type ManualWizardStep = 'pickup' | 'dropoff' | 'login' | 'quote' | 'vehicle' | 'confirm';
+
+type AddressSuggestion = {
+  text: string;
+  magicKey?: string;
 };
 
 type FormSectionKey =
@@ -1144,6 +1161,7 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
   const STORAGE_ERROR = 'ed_submitError';
   const STORAGE_RECEIPTS_PENDING = 'ed_receipts_pending';
   const STORAGE_RECEIPTS_BY_USER_PREFIX = 'ed_receipts_by_user_';
+  const STORAGE_MANUAL_RESUME = 'ed_manual_wizard_resume_v1';
 
   const extractionUrl = (() => {
     const fnPath = '/.netlify/functions/extract-documents';
@@ -1230,6 +1248,18 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
   const [dragActive, setDragActive] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isManualFormOpen, setIsManualFormOpen] = useState(false);
+  const [manualWizardStep, setManualWizardStep] = useState<ManualWizardStep>('pickup');
+  const [manualWizardError, setManualWizardError] = useState<string | null>(null);
+  const [manualVinDecodeLoading, setManualVinDecodeLoading] = useState(false);
+
+  const [pickupSearch, setPickupSearch] = useState('');
+  const [pickupSuggestions, setPickupSuggestions] = useState<AddressSuggestion[]>([]);
+  const [pickupSuggestLoading, setPickupSuggestLoading] = useState(false);
+
+  const [dropoffSearch, setDropoffSearch] = useState('');
+  const [dropoffSuggestions, setDropoffSuggestions] = useState<AddressSuggestion[]>([]);
+  const [dropoffSuggestLoading, setDropoffSuggestLoading] = useState(false);
+  const [resumeManualWizardAfterLogin, setResumeManualWizardAfterLogin] = useState<ManualWizardStep | null>(null);
   const [showCostEstimate, setShowCostEstimate] = useState(false);
   const [showCheckout, setShowCheckout] = useState(false);
   const [costData, setCostData] = useState<CostData | null>(null);
@@ -1369,13 +1399,20 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
     if (!formData || !costData) return;
     const now = new Date().toISOString();
     const draftId = activeDraftId ?? `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const inferredDraftSource: CheckoutDraft['draftSource'] =
+      String(formData?.draft_source ?? '').trim() === 'bulk_upload' || uploadedFiles.length > 0 ? 'bulk_upload' : 'manual';
+    const persistedCost = minimizeCostDataForStorage(costData);
     const draft: CheckoutDraft = {
       id: draftId,
       createdAt: now,
-      formData: { ...formData, draft_source: String(formData?.draft_source ?? '').trim() || 'manual' },
-      costData,
+      formData: {
+        ...formData,
+        draft_source:
+          String(formData?.draft_source ?? '').trim() || (inferredDraftSource === 'bulk_upload' ? 'bulk_upload' : 'manual'),
+      },
+      costData: persistedCost,
       docCount: draftDocCount ?? uploadedFiles.length,
-      draftSource: 'manual',
+      draftSource: inferredDraftSource,
       uploadedFilesMeta: uploadedFiles.map((f) => ({ key: makeDraftFileKey(f.file), name: f.name, docType: f.docType })),
     };
     try {
@@ -1414,10 +1451,16 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
     setSubmitError(false);
   };
 
-  const saveDraftBeforeSignIn = useCallback(async (override?: { formData?: FormData | null; costData?: CostData | null }) => {
+  const saveDraftBeforeSignIn = useCallback(async (override?: { formData?: FormData | null; costData?: CostData | null }): Promise<string | null> => {
     const effectiveFormData = override && 'formData' in override ? override.formData : formData;
     const effectiveCostData = override && 'costData' in override ? override.costData ?? null : costData;
-    if (uploadedFiles.length === 0 && !effectiveFormData && !effectiveCostData) return;
+    if (uploadedFiles.length === 0 && !effectiveFormData && !effectiveCostData) return null;
+
+    const persistedCostData = minimizeCostDataForStorage(effectiveCostData);
+    const inferredDraftSource: CheckoutDraft['draftSource'] =
+      String(effectiveFormData?.draft_source ?? '').trim() === 'bulk_upload' || (!effectiveFormData && uploadedFiles.length > 0)
+        ? 'bulk_upload'
+        : 'manual';
 
     const draftId = activeDraftId ?? `${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const baseForm: FormData =
@@ -1457,10 +1500,14 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
     const draft: CheckoutDraft = {
       id: draftId,
       createdAt: new Date().toISOString(),
-      formData: { ...baseForm, draft_source: String(baseForm.draft_source ?? '').trim() || 'manual' },
-      costData: effectiveCostData,
+      formData: {
+        ...baseForm,
+        draft_source:
+          String(baseForm.draft_source ?? '').trim() || (inferredDraftSource === 'bulk_upload' ? 'bulk_upload' : 'manual'),
+      },
+      costData: persistedCostData,
       docCount: draftDocCount ?? uploadedFiles.length,
-      draftSource: 'manual',
+      draftSource: inferredDraftSource,
       needsExtraction: !effectiveFormData,
       uploadedFilesMeta: uploadedFiles.map((f) => ({ key: makeDraftFileKey(f.file), name: f.name, docType: f.docType })),
     };
@@ -1502,6 +1549,7 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
 
     setActiveDraftId(draftId);
     setDraftDocCount(draft.docCount);
+    return draftId;
   }, [activeDraftId, costData, draftDocCount, formData, uploadedFiles]);
 
   useEffect(() => {
@@ -1570,6 +1618,8 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
         const restoredFormData = !needsExtraction ? (nextFormData as FormData) : null;
         setFormData(restoredFormData);
 
+        const draftSource = readString((restoredFormData as unknown as Record<string, unknown> | null)?.draft_source);
+
         setPickupStreetSelected(Boolean(String(restoredFormData?.pickup_location?.street ?? '').trim()));
         setDropoffStreetSelected(Boolean(String(restoredFormData?.dropoff_location?.street ?? '').trim()));
 
@@ -1577,6 +1627,30 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
         setCostData(hasCost ? (nextCostData as CostData) : null);
         setDraftDocCount(typeof nextDocCount === 'number' && Number.isFinite(nextDocCount) ? nextDocCount : null);
         setActiveDraftId(draftId);
+
+        if (draftSource === 'manual') {
+          setUploadedFiles([]);
+          setPickupSearch(String(restoredFormData?.pickup_location?.address ?? '').trim());
+          setDropoffSearch(String(restoredFormData?.dropoff_location?.address ?? '').trim());
+
+          const hasPickup = Boolean(String(restoredFormData?.pickup_location?.address ?? '').trim());
+          const hasDropoff = Boolean(String(restoredFormData?.dropoff_location?.address ?? '').trim());
+          const nextStep: ManualWizardStep = hasCost
+            ? 'quote'
+            : hasPickup && hasDropoff
+              ? 'login'
+              : hasPickup
+                ? 'dropoff'
+                : 'pickup';
+
+          setManualWizardStep(nextStep);
+          setIsManualFormOpen(true);
+          setShowCheckout(false);
+          setShowCostEstimate(false);
+          setSubmitMessage('Draft loaded. Continue your manual quote.');
+          setSubmitError(false);
+          return;
+        }
 
         if (draftId) {
           try {
@@ -1643,7 +1717,7 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
     const parts = q.split(',').map((p) => p.trim()).filter(Boolean);
     const idxWithNumber = parts.findIndex((p) => /\d/.test(p));
     const normalizedQuery = idxWithNumber > 0 ? parts.slice(idxWithNumber).join(', ') : q;
-    const url = `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=pjson&maxLocations=1&outFields=*&singleLine=${encodeURIComponent(normalizedQuery)}`;
+    const url = `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=pjson&maxLocations=1&outFields=*&sourceCountry=CAN&singleLine=${encodeURIComponent(normalizedQuery)}`;
     const res = await fetch(url);
     if (!res.ok) return null;
     const data = (await res.json()) as {
@@ -1767,8 +1841,8 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
             const distanceKm = Math.round(route.distance / 1000);
             const durationMin = Math.round(route.duration / 60);
             const polyline = route?.geometry?.coordinates ? encodePolyline(route.geometry.coordinates) : undefined;
-            
-            const costPerKm = 2.50;
+
+            const costPerKm = getDistanceRatePerKm();
             const minimumCost = 150;
             const calculatedCost = Math.max(distanceKm * costPerKm, minimumCost);
 
@@ -1795,8 +1869,8 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
               const distanceKm = Math.round(route.distance / 1000);
               const durationMin = Math.round(route.duration / 60);
               const polyline = route?.geometry?.coordinates ? encodePolyline(route.geometry.coordinates) : undefined;
-              
-              const costPerKm = 2.50;
+
+              const costPerKm = getDistanceRatePerKm();
               const minimumCost = 150;
               const calculatedCost = Math.max(distanceKm * costPerKm, minimumCost);
               
@@ -1827,8 +1901,8 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
       const averageSpeed = 60; // km/h
       const duration = Math.round((distance / averageSpeed) * 60); // minutes
 
-      // Simple cost calculation: $2.50 per km with minimum $150
-      const costPerKm = 2.50;
+      // Simple cost calculation: per km with minimum $150
+      const costPerKm = getDistanceRatePerKm();
       const minimumCost = 150;
       const calculatedCost = Math.max(distance * costPerKm, minimumCost);
 
@@ -2755,6 +2829,236 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
     setFormData(null);
   };
 
+  const startManualWizard = () => {
+    setManualWizardStep('pickup');
+    setManualWizardError(null);
+    setManualVinDecodeLoading(false);
+    setShowCostEstimate(false);
+    setPickupSearch('');
+    setPickupSuggestions([]);
+    setPickupSuggestLoading(false);
+    setDropoffSearch('');
+    setDropoffSuggestions([]);
+    setDropoffSuggestLoading(false);
+  };
+
+  const hideManualFormKeepState = () => {
+    setIsManualFormOpen(false);
+    setManualWizardError(null);
+  };
+
+  const persistManualResumeState = (payload: unknown) => {
+    try {
+      sessionStorage.setItem(STORAGE_MANUAL_RESUME, JSON.stringify(payload));
+      return;
+    } catch {
+      // ignore
+    }
+    try {
+      localStorage.setItem(STORAGE_MANUAL_RESUME, JSON.stringify(payload));
+    } catch {
+      // ignore
+    }
+  };
+
+  const readManualResumeState = (): { step: ManualWizardStep; formData: FormData | null; costData: CostData | null; pickupSearch: string; dropoffSearch: string } | null => {
+    const read = (): string | null => {
+      try {
+        return sessionStorage.getItem(STORAGE_MANUAL_RESUME);
+      } catch {
+        // ignore
+      }
+      try {
+        return localStorage.getItem(STORAGE_MANUAL_RESUME);
+      } catch {
+        return null;
+      }
+    };
+
+    const raw = read();
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (!isRecord(parsed)) return null;
+      const stepRaw = readString(parsed.step);
+      const step: ManualWizardStep =
+        stepRaw === 'pickup' || stepRaw === 'dropoff' || stepRaw === 'login' || stepRaw === 'quote' || stepRaw === 'vehicle' || stepRaw === 'confirm'
+          ? (stepRaw as ManualWizardStep)
+          : 'login';
+
+      const nextFormDataRaw = (parsed as Record<string, unknown>).formData;
+      const nextFormData = isRecord(nextFormDataRaw) ? (nextFormDataRaw as FormData) : null;
+
+      const nextCostRaw = (parsed as Record<string, unknown>).costData;
+      const nextCost = isRecord(nextCostRaw) ? (nextCostRaw as CostData) : null;
+
+      const nextPickupSearch = readString((parsed as Record<string, unknown>).pickupSearch);
+      const nextDropoffSearch = readString((parsed as Record<string, unknown>).dropoffSearch);
+
+      return {
+        step,
+        formData: nextFormData,
+        costData: nextCost,
+        pickupSearch: nextPickupSearch,
+        dropoffSearch: nextDropoffSearch,
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  const clearManualResumeState = () => {
+    try {
+      sessionStorage.removeItem(STORAGE_MANUAL_RESUME);
+    } catch {
+      // ignore
+    }
+    try {
+      localStorage.removeItem(STORAGE_MANUAL_RESUME);
+    } catch {
+      // ignore
+    }
+  };
+
+  useEffect(() => {
+    if (!resumeManualWizardAfterLogin) return;
+    if (!isLoggedIn) return;
+    setIsManualFormOpen(true);
+    setManualWizardStep(resumeManualWizardAfterLogin);
+    setResumeManualWizardAfterLogin(null);
+  }, [isLoggedIn, resumeManualWizardAfterLogin]);
+
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    const restored = readManualResumeState();
+    if (!restored) return;
+
+    setFormData(restored.formData);
+    setCostData(restored.costData);
+    setPickupSearch(restored.pickupSearch || String(restored.formData?.pickup_location?.address ?? ''));
+    setDropoffSearch(restored.dropoffSearch || String(restored.formData?.dropoff_location?.address ?? ''));
+    setManualWizardStep(restored.step);
+    setIsManualFormOpen(true);
+    clearManualResumeState();
+  }, [clearManualResumeState, isLoggedIn, readManualResumeState]);
+
+  const computeManualQuote = async () => {
+    if (!formData) return false;
+
+    const pickupAddress = String(formData?.pickup_location?.address ?? '').trim();
+    const dropoffAddress = String(formData?.dropoff_location?.address ?? '').trim();
+
+    if (!pickupAddress || pickupAddress.length < 5) {
+      setManualWizardError('Please enter a valid Pickup address in Canada.');
+      return false;
+    }
+
+    if (!dropoffAddress || dropoffAddress.length < 5) {
+      setManualWizardError('Please enter a valid Drop-off address in Canada.');
+      return false;
+    }
+
+    const pickupResolved =
+      dealershipCoords ?? (pickupAddress ? await geocodeAddress(pickupAddress).catch(() => null) : null);
+    if (pickupResolved && !dealershipCoords) {
+      setDealershipCoords(pickupResolved);
+    }
+
+    const dropoffLatRaw = String(formData?.dropoff_location?.lat ?? '').trim();
+    const dropoffLngRaw = String(formData?.dropoff_location?.lng ?? '').trim();
+    const dropoffLat = Number(dropoffLatRaw);
+    const dropoffLng = Number(dropoffLngRaw);
+    const hasDropoffCoords =
+      dropoffLatRaw !== '' &&
+      dropoffLngRaw !== '' &&
+      Number.isFinite(dropoffLat) &&
+      Number.isFinite(dropoffLng) &&
+      dropoffLat >= -90 &&
+      dropoffLat <= 90 &&
+      dropoffLng >= -180 &&
+      dropoffLng <= 180 &&
+      !(dropoffLat === 0 && dropoffLng === 0);
+
+    const dropoffResolved = hasDropoffCoords ? { lat: dropoffLat, lng: dropoffLng } : dropoffAddress ? await geocodeAddress(dropoffAddress).catch(() => null) : null;
+    if (dropoffResolved && !hasDropoffCoords) {
+      updateFormField('dropoff_location', 'lat', String(dropoffResolved.lat));
+      updateFormField('dropoff_location', 'lng', String(dropoffResolved.lng));
+    }
+
+    if (!pickupResolved || !dropoffResolved) {
+      setManualWizardError('Unable to locate both addresses on the map. Please verify the addresses and try again.');
+      return false;
+    }
+
+    const estimate = await calculateCostAndDistance(pickupResolved.lat, pickupResolved.lng, dropoffResolved.lat, dropoffResolved.lng);
+    if (!estimate) {
+      setManualWizardError('Unable to calculate distance. Please try again.');
+      return false;
+    }
+
+    const nextCost = { ...estimate, pricingStatus: 'estimated' as const };
+    setCostData(nextCost);
+    setManualWizardError(null);
+    return true;
+  };
+
+  const fetchAddressSuggestions = async (query: string): Promise<AddressSuggestion[]> => {
+    const q = String(query ?? '').trim();
+    if (!q || q.length < 3) return [];
+    const url = `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/suggest?f=pjson&maxSuggestions=6&countryCode=CAN&text=${encodeURIComponent(q)}`;
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const data = (await res.json().catch(() => null)) as unknown;
+    const suggestions = isRecord(data) ? (data as Record<string, unknown>).suggestions : null;
+    if (!Array.isArray(suggestions)) return [];
+    return suggestions
+      .map((s) => {
+        const obj = s && typeof s === 'object' ? (s as Record<string, unknown>) : null;
+        if (!obj) return null;
+        const text = String(obj.text ?? '').trim();
+        const magicKey = String(obj.magicKey ?? '').trim();
+        if (!text) return null;
+        return magicKey ? ({ text, magicKey } as AddressSuggestion) : ({ text } as AddressSuggestion);
+      })
+      .filter((s): s is AddressSuggestion => s !== null);
+  };
+
+  useEffect(() => {
+    if (!isManualFormOpen) return;
+    const q = pickupSearch.trim();
+    let cancelled = false;
+    setPickupSuggestLoading(true);
+    const t = window.setTimeout(async () => {
+      const list = await fetchAddressSuggestions(q).catch(() => []);
+      if (cancelled) return;
+      setPickupSuggestions(list);
+      setPickupSuggestLoading(false);
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+      setPickupSuggestLoading(false);
+    };
+  }, [pickupSearch, isManualFormOpen]);
+
+  useEffect(() => {
+    if (!isManualFormOpen) return;
+    const q = dropoffSearch.trim();
+    let cancelled = false;
+    setDropoffSuggestLoading(true);
+    const t = window.setTimeout(async () => {
+      const list = await fetchAddressSuggestions(q).catch(() => []);
+      if (cancelled) return;
+      setDropoffSuggestions(list);
+      setDropoffSuggestLoading(false);
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+      setDropoffSuggestLoading(false);
+    };
+  }, [dropoffSearch, isManualFormOpen]);
+
   const renderFormDetails = () => {
     if (!formData) return null;
 
@@ -2870,15 +3174,12 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
           <h5 className="text-sm font-semibold text-gray-700 mb-3">Service Details</h5>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
-              <label className="block text-sm text-gray-600 mb-1">Service Type</label>
-              <select
-                value={String(formData?.service?.service_type ?? 'pickup_one_way')}
-                onChange={(e) => updateFormField('service', 'service_type', e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white"
-              >
-                <option value="pickup_one_way">Pickup (one-way)</option>
-                <option value="delivery_one_way">Delivery (one-way)</option>
-              </select>
+              <label className="block text-sm text-gray-600 mb-1">Service</label>
+              <input
+                value="Vehicle transport"
+                readOnly
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-800"
+              />
             </div>
             <div>
               <label className="block text-sm text-gray-600 mb-1">Vehicle Type</label>
@@ -3483,14 +3784,6 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
       const dropoffLat = Number(dropoffLatRaw);
       const dropoffLng = Number(dropoffLngRaw);
 
-      const pricingArea = dropoffCity || pickupCity;
-      const pickupAddressBase = String(formData?.pickup_location?.address ?? '').trim();
-      const pickupName = String(formData?.pickup_location?.name ?? '').trim();
-      const pickupLookup = `${pickupAddressBase} ${pickupName} ${pickupCity}`.trim();
-
-      const official =
-        getOfficialCityPriceForServiceArea(pricingArea) ?? (pickupLookup ? getOfficialCityPriceForAddress(pickupLookup) : null);
-
       const hasValidDropoffCoords =
         dropoffLatRaw !== '' &&
         dropoffLngRaw !== '' &&
@@ -3505,9 +3798,7 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
       if (Number.isFinite(pickupLat) && Number.isFinite(pickupLng) && hasValidDropoffCoords) {
         const estimate = await calculateCostAndDistance(pickupLat, pickupLng, dropoffLat, dropoffLng);
         if (estimate) {
-          const nextCost = official
-            ? { ...estimate, cost: official.total_price, pricingCity: official.city, pricingStatus: 'official' as const }
-            : { ...estimate, pricingStatus: 'estimated' as const };
+          const nextCost = { ...estimate, pricingStatus: 'estimated' as const };
           setCostData(nextCost);
           if (!isLoggedIn) {
             try {
@@ -3520,21 +3811,6 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
           setShowCostEstimate(true);
           return;
         }
-      }
-
-      if (official) {
-        const nextCost = { distance: 0, cost: official.total_price, pricingCity: official.city, pricingStatus: 'official' as const };
-        setCostData(nextCost);
-        if (!isLoggedIn) {
-          try {
-            await saveDraftBeforeSignIn({ formData, costData: nextCost });
-          } catch {
-            // ignore
-          }
-        }
-        if (isManualFormOpen) setIsManualFormOpen(false);
-        setShowCostEstimate(true);
-        return;
       }
 
       if (isManualFormOpen) setIsManualFormOpen(false);
@@ -3634,18 +3910,10 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
         const dropoffLngStr = String(extracted?.dropoff_location?.lng ?? '').trim();
         const dropoffLat = Number(dropoffLatStr);
         const dropoffLng = Number(dropoffLngStr);
-
-        const pickupCity = String(extracted?.pickup_location?.city ?? '').trim();
-        const dropoffCity = String(extracted?.dropoff_location?.city ?? '').trim();
-        const pricingArea = dropoffCity || pickupCity;
         const pickupAddress = String(extracted?.pickup_location?.address ?? '').trim();
         const pickupName = String(extracted?.pickup_location?.name ?? '').trim();
 
         const pickupQuery = pickupAddress || pickupName;
-        const pickupLookup = `${pickupQuery} ${pickupCity}`.trim();
-
-        const official =
-          getOfficialCityPriceForServiceArea(pricingArea) ?? (pickupLookup ? getOfficialCityPriceForAddress(pickupLookup) : null);
 
         const hasValidDropoffCoords =
           dropoffLatStr !== '' &&
@@ -3679,14 +3947,8 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
             resolvedDropoffCoords.lng
           );
           if (estimate) {
-            return official
-              ? { ...estimate, cost: official.total_price, pricingCity: official.city, pricingStatus: 'official' as const }
-              : { ...estimate, pricingStatus: 'estimated' as const };
+            return minimizeCostDataForStorage({ ...estimate, pricingStatus: 'estimated' as const });
           }
-        }
-
-        if (official) {
-          return { distance: 0, cost: official.total_price, pricingCity: official.city, pricingStatus: 'official' as const };
         }
 
         return null;
@@ -3858,6 +4120,7 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
       const extractedWithRules: FormData | null = extractedDecoded
         ? {
             ...extractedDecoded,
+            draft_source: 'bulk_upload',
             pickup_locked: true,
             dropoff_location: {
               ...extractedDecoded.dropoff_location,
@@ -3883,28 +4146,6 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
       if (extractedWithRules) {
         setPickupStreetSelected(Boolean(String(extractedWithRules?.pickup_location?.street ?? '').trim()));
         setDropoffStreetSelected(Boolean(String(extractedWithRules?.dropoff_location?.street ?? '').trim()));
-      }
-
-      const pickupCity = String(extractedWithRules?.pickup_location?.city ?? '').trim();
-      const dropoffCity = String(extractedWithRules?.dropoff_location?.city ?? '').trim();
-      const pricingArea = dropoffCity || pickupCity;
-      const pickupAddressBase = String(extractedWithRules?.pickup_location?.address ?? '').trim();
-      const pickupName = String(extractedWithRules?.pickup_location?.name ?? '').trim();
-      const pickupLookup = `${pickupAddressBase} ${pickupName} ${pickupCity}`.trim();
-
-      const extractedOfficial =
-        getOfficialCityPriceForServiceArea(pricingArea) ?? (pickupLookup ? getOfficialCityPriceForAddress(pickupLookup) : null);
-      if (extractedOfficial) {
-        setCostData({
-          distance: 0,
-          cost: extractedOfficial.total_price,
-          pricingCity: extractedOfficial.city,
-          pricingStatus: 'official' as const,
-        });
-        setShowCostEstimate(false);
-        setSubmitMessage('Document extracted successfully. Please review the details then click View Quote Now.');
-        setSubmitError(false);
-        return;
       }
 
       setSubmitMessage('Document extracted successfully. Please review the details then click View Quote Now.');
@@ -4873,12 +5114,13 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
                     type="button"
                     onClick={() => {
                       clearPersisted();
+                      setUploadedFiles([]);
                       setSubmitMessage(null);
                       setSubmitError(false);
-                      setUploadedFiles([]);
                       if (fileInputRef.current) fileInputRef.current.value = '';
                       setFormData(createBlankFormData());
                       setActiveDraftId(null);
+                      startManualWizard();
                       setIsManualFormOpen(true);
                     }}
                     className="mt-auto w-full px-6 py-3 rounded-lg border border-gray-300 bg-white text-gray-800 hover:bg-gray-50 transition-colors font-semibold"
@@ -4931,9 +5173,259 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
 
                 <div className="px-4 sm:px-6 py-4 sm:py-6 overflow-y-auto flex-1 min-h-0">
                   <form onSubmit={preventFormSubmit}>
-                    {renderFormDetails()}
+                    <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+                      <div className="text-sm font-semibold text-gray-900">Manual quote wizard</div>
+                      <div className="mt-1 text-xs text-gray-600">
+                        Step {manualWizardStep === 'pickup' ? '1' : manualWizardStep === 'dropoff' ? '2' : manualWizardStep === 'login' ? '3' : manualWizardStep === 'quote' ? '4' : manualWizardStep === 'vehicle' ? '5' : '6'} of 6
+                      </div>
+                      {manualWizardError ? <div className="mt-3 text-sm font-medium text-red-600">{manualWizardError}</div> : null}
+                    </div>
 
-                    <div className="mt-6 flex flex-col-reverse sm:flex-row sm:justify-end gap-3">
+                    {manualWizardStep === 'pickup' ? (
+                      <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
+                        <div className="text-sm font-semibold text-gray-900">Enter Pickup Address</div>
+                        <div className="mt-1 text-sm text-gray-600">Start typing and choose an address in Canada.</div>
+                        <div className="mt-3 relative">
+                          <input
+                            value={pickupSearch}
+                            onChange={(e) => {
+                              const next = e.target.value;
+                              setPickupSearch(next);
+                              updateFormField('pickup_location', 'address', next);
+                              setDealershipCoords(null);
+                            }}
+                            autoComplete="shipping street-address"
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                            placeholder="e.g., 123 Main St, Montreal, QC"
+                          />
+                          {(pickupSuggestLoading || pickupSuggestions.length > 0) && pickupSearch.trim().length >= 3 ? (
+                            <div className="absolute z-10 mt-2 w-full overflow-hidden rounded-xl border border-gray-200 bg-white shadow-lg">
+                              {pickupSuggestLoading ? <div className="px-3 py-2 text-sm text-gray-500">Searching...</div> : null}
+                              {pickupSuggestions.map((s) => (
+                                <button
+                                  key={`${s.text}-${s.magicKey ?? ''}`}
+                                  type="button"
+                                  onClick={() => {
+                                    void (async () => {
+                                      setPickupSearch(s.text);
+                                      setPickupSuggestions([]);
+                                      updateFormField('pickup_location', 'address', s.text);
+                                      const coords = await geocodeAddress(s.text).catch(() => null);
+                                      if (coords) setDealershipCoords(coords);
+                                    })();
+                                  }}
+                                  className="block w-full text-left px-3 py-2 text-sm text-gray-800 hover:bg-gray-50"
+                                >
+                                  {s.text}
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : manualWizardStep === 'dropoff' ? (
+                      <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
+                        <div className="text-sm font-semibold text-gray-900">Enter Drop-off Address</div>
+                        <div className="mt-1 text-sm text-gray-600">Start typing and choose an address in Canada.</div>
+                        <div className="mt-3 relative">
+                          <input
+                            value={dropoffSearch}
+                            onChange={(e) => {
+                              const next = e.target.value;
+                              setDropoffSearch(next);
+                              updateFormField('dropoff_location', 'address', next);
+                              updateFormField('dropoff_location', 'lat', '');
+                              updateFormField('dropoff_location', 'lng', '');
+                            }}
+                            autoComplete="billing street-address"
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                            placeholder="e.g., 456 King St, Ottawa, ON"
+                          />
+                          {(dropoffSuggestLoading || dropoffSuggestions.length > 0) && dropoffSearch.trim().length >= 3 ? (
+                            <div className="absolute z-10 mt-2 w-full overflow-hidden rounded-xl border border-gray-200 bg-white shadow-lg">
+                              {dropoffSuggestLoading ? <div className="px-3 py-2 text-sm text-gray-500">Searching...</div> : null}
+                              {dropoffSuggestions.map((s) => (
+                                <button
+                                  key={`${s.text}-${s.magicKey ?? ''}`}
+                                  type="button"
+                                  onClick={() => {
+                                    void (async () => {
+                                      setDropoffSearch(s.text);
+                                      setDropoffSuggestions([]);
+                                      updateFormField('dropoff_location', 'address', s.text);
+                                      const coords = await geocodeAddress(s.text).catch(() => null);
+                                      if (coords) {
+                                        updateFormField('dropoff_location', 'lat', String(coords.lat));
+                                        updateFormField('dropoff_location', 'lng', String(coords.lng));
+                                      }
+                                    })();
+                                  }}
+                                  className="block w-full text-left px-3 py-2 text-sm text-gray-800 hover:bg-gray-50"
+                                >
+                                  {s.text}
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+
+                        <div className="mt-4 border border-gray-200 rounded-lg overflow-hidden bg-white h-60 sm:h-80 relative z-0">
+                          <MapContainer
+                            center={dropoffCoords ? [dropoffCoords.lat, dropoffCoords.lng] : dealershipCoords ? [dealershipCoords.lat, dealershipCoords.lng] : [45.5017, -73.5673]}
+                            zoom={dropoffCoords || dealershipCoords ? 13 : 10}
+                            style={{ height: '100%', width: '100%', zIndex: 1 }}
+                          >
+                            <TileLayer attribution='Tiles &copy; Esri' url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" />
+                            <DropoffMapClickHandler />
+                            {(dropoffCoords || dealershipCoords) && (
+                              <>
+                                <DropoffMapUpdater lat={(dropoffCoords ?? dealershipCoords)!.lat} lng={(dropoffCoords ?? dealershipCoords)!.lng} />
+                                <Marker position={[(dropoffCoords ?? dealershipCoords)!.lat, (dropoffCoords ?? dealershipCoords)!.lng]} icon={dropoffMarkerIcon} />
+                              </>
+                            )}
+                          </MapContainer>
+                        </div>
+                      </div>
+                    ) : manualWizardStep === 'login' ? (
+                      <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
+                        <div className="text-sm font-semibold text-gray-900">Login</div>
+                        <div className="mt-1 text-sm text-gray-600">Log in with Google to see your quote.</div>
+                        {!isLoggedIn ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void (async () => {
+                                setResumeManualWizardAfterLogin('login');
+                                hideManualFormKeepState();
+
+                                const safeCost: CostData | null = costData
+                                  ? { distance: costData.distance, cost: costData.cost, duration: costData.duration, pricingStatus: costData.pricingStatus }
+                                  : null;
+
+                                persistManualResumeState({
+                                  step: 'login',
+                                  formData,
+                                  costData: safeCost,
+                                  pickupSearch,
+                                  dropoffSearch,
+                                });
+
+                                await saveDraftBeforeSignIn({ formData, costData: safeCost }).catch(() => null);
+                                onContinueToSignIn?.();
+                              })();
+                            }}
+                            className="mt-4 inline-flex justify-center rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 transition-colors"
+                          >
+                            Log in with Google
+                          </button>
+                        ) : (
+                          <div className="mt-3 text-sm font-medium text-emerald-700">Logged in. Click Next to calculate your quote.</div>
+                        )}
+                      </div>
+                    ) : manualWizardStep === 'quote' ? (
+                      <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
+                        <div className="text-sm font-semibold text-gray-900">Quote</div>
+                        <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
+                          <div className="rounded-lg bg-gray-50 border border-gray-200 p-3">
+                            <div className="text-xs font-medium text-gray-500">Distance</div>
+                            <div className="mt-1 font-semibold text-gray-900">{Number(costData?.distance ?? 0) || 0} km</div>
+                          </div>
+                          <div className="rounded-lg bg-gray-50 border border-gray-200 p-3">
+                            <div className="text-xs font-medium text-gray-500">Rate</div>
+                            <div className="mt-1 font-semibold text-gray-900">${getDistanceRatePerKm()}/km</div>
+                          </div>
+                          <div className="rounded-lg bg-gray-50 border border-gray-200 p-3">
+                            <div className="text-xs font-medium text-gray-500">Minimum</div>
+                            <div className="mt-1 font-semibold text-gray-900">$150</div>
+                          </div>
+                        </div>
+                        <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50 p-4">
+                          <div className="text-xs font-medium text-gray-500">Estimated price (before tax)</div>
+                          <div className="mt-1 text-2xl font-bold text-gray-900">${Number(costData?.cost ?? 0) || 0}</div>
+                        </div>
+                      </div>
+                    ) : manualWizardStep === 'vehicle' ? (
+                      <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
+                        <div className="text-sm font-semibold text-gray-900">Vehicle details</div>
+                        <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-4">
+                          <div>
+                            <label className="block text-sm text-gray-600 mb-1">VIN</label>
+                            <div className="flex gap-2">
+                              <input
+                                value={formData?.vehicle?.vin ?? ''}
+                                onChange={(e) => updateFormField('vehicle', 'vin', e.target.value)}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void (async () => {
+                                    if (!formData) return;
+                                    const vin = String(formData.vehicle.vin ?? '').trim().toUpperCase();
+                                    if (!/^[A-HJ-NPR-Z0-9]{17}$/.test(vin)) {
+                                      setManualWizardError('Enter a valid 17-character VIN to decode.');
+                                      return;
+                                    }
+                                    setManualVinDecodeLoading(true);
+                                    setManualWizardError(null);
+                                    const info = await decodeVinViaNhtsa(vin).catch(() => null);
+                                    setManualVinDecodeLoading(false);
+                                    if (!info) {
+                                      setManualWizardError('VIN decode failed. Please verify the VIN and try again.');
+                                      return;
+                                    }
+                                    updateFormField('vehicle', 'year', String(info.year ?? ''));
+                                    updateFormField('vehicle', 'make', String(info.make ?? ''));
+                                    updateFormField('vehicle', 'model', String(info.model ?? ''));
+                                  })();
+                                }}
+                                disabled={manualVinDecodeLoading}
+                                className="shrink-0 inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                              >
+                                {manualVinDecodeLoading ? 'Decoding...' : 'Decode'}
+                              </button>
+                            </div>
+                          </div>
+                          <div>
+                            <label className="block text-sm text-gray-600 mb-1">Year</label>
+                            <input
+                              value={formData?.vehicle?.year ?? ''}
+                              onChange={(e) => updateFormField('vehicle', 'year', sanitizeDigits(e.target.value).slice(0, 4))}
+                              inputMode="numeric"
+                              pattern="[0-9]*"
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm text-gray-600 mb-1">Make</label>
+                            <input
+                              value={formData?.vehicle?.make ?? ''}
+                              onChange={(e) => updateFormField('vehicle', 'make', e.target.value)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm text-gray-600 mb-1">Model</label>
+                            <input
+                              value={formData?.vehicle?.model ?? ''}
+                              onChange={(e) => updateFormField('vehicle', 'model', e.target.value)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
+                        <div className="text-sm font-semibold text-gray-900">Confirm & checkout</div>
+                        <div className="mt-1 text-sm text-gray-600">Next will open checkout. If you are not logged in, we will save a draft and ask you to log in.</div>
+                        <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50 p-4">
+                          <div className="text-xs font-medium text-gray-500">Estimated price (before tax)</div>
+                          <div className="mt-1 text-2xl font-bold text-gray-900">${Number(costData?.cost ?? 0) || 0}</div>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="mt-6 flex flex-col-reverse sm:flex-row sm:justify-between gap-3">
                       <button
                         type="button"
                         onClick={() => {
@@ -4949,14 +5441,53 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
                       >
                         Clear All
                       </button>
-                      <button
-                        type="button"
-                        onClick={handleSubmitDocuments}
-                        disabled={isSubmitting}
-                        className="w-full sm:w-auto px-6 py-3 bg-cyan-500 text-white rounded-lg hover:bg-cyan-600 transition-colors font-medium disabled:opacity-60 disabled:cursor-not-allowed"
-                      >
-                        {isSubmitting ? 'Submitting...' : 'View Quote Now'}
-                      </button>
+
+                      <div className="w-full sm:w-auto flex flex-col sm:flex-row gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setManualWizardError(null);
+                            if (manualWizardStep === 'pickup') return;
+                            if (manualWizardStep === 'dropoff') return setManualWizardStep('pickup');
+                            if (manualWizardStep === 'login') return setManualWizardStep('dropoff');
+                            if (manualWizardStep === 'quote') return setManualWizardStep('login');
+                            if (manualWizardStep === 'vehicle') return setManualWizardStep('quote');
+                            return setManualWizardStep('vehicle');
+                          }}
+                          className="w-full sm:w-auto px-6 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium"
+                        >
+                          Back
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void (async () => {
+                              setManualWizardError(null);
+                              if (manualWizardStep === 'pickup') return setManualWizardStep('dropoff');
+                              if (manualWizardStep === 'dropoff') return setManualWizardStep('login');
+                              if (manualWizardStep === 'login') {
+                                if (!isLoggedIn) {
+                                  setManualWizardError('Please log in to get your quote.');
+                                  return;
+                                }
+                                const ok = await computeManualQuote();
+                                if (ok) setManualWizardStep('quote');
+                                return;
+                              }
+                              if (manualWizardStep === 'quote') return setManualWizardStep('vehicle');
+                              if (manualWizardStep === 'vehicle') return setManualWizardStep('confirm');
+                              if (manualWizardStep === 'confirm') {
+                                hideManualFormKeepState();
+                                await handleProceedWithCost();
+                              }
+                            })();
+                          }}
+                          disabled={isSubmitting}
+                          className="w-full sm:w-auto px-6 py-3 bg-cyan-500 text-white rounded-lg hover:bg-cyan-600 transition-colors font-medium disabled:opacity-60 disabled:cursor-not-allowed"
+                        >
+                          {manualWizardStep === 'confirm' ? 'Open checkout' : 'Next'}
+                        </button>
+                      </div>
                     </div>
                   </form>
                 </div>
@@ -4966,7 +5497,7 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
           )
         : null}
 
-      {!isManualFormOpen && (uploadedFiles.length > 0 || formData) && (
+      {!isManualFormOpen && (uploadedFiles.length > 0 || (formData && String(formData?.draft_source ?? '').trim() !== 'manual')) && (
         <div className="mt-8">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
             <h4 className="text-base sm:text-lg font-semibold text-gray-800">Uploaded Files</h4>
