@@ -44,8 +44,22 @@ type WorkOrderFields = {
 const readObj = (v: unknown): Record<string, unknown> | null => (v && typeof v === 'object' ? (v as Record<string, unknown>) : null);
 const readStr = (v: unknown) => (typeof v === 'string' ? v : String(v ?? '')).trim();
 
+const readJsonObj = (v: unknown): Record<string, unknown> | null => {
+  const obj = readObj(v);
+  if (obj) return obj;
+  if (typeof v !== 'string') return null;
+  const raw = v.trim();
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return readObj(parsed);
+  } catch {
+    return null;
+  }
+};
+
 const getWorkOrderFields = (order: LocalOrder): WorkOrderFields => {
-  const form = readObj(order.form_data);
+  const form = readJsonObj(order.form_data);
   const vehicle = readObj(form?.vehicle);
   const pickup = readObj(form?.pickup_location);
   const dropoff = readObj(form?.dropoff_location);

@@ -4,6 +4,8 @@ import FileUploadSection from './FileUploadSection';
 import { supabase } from '../lib/supabaseClient';
 import LocalOrders from './LocalOrders';
 import ReceiptHistory from './ReceiptHistory';
+import { createSavedQuoteOrder } from '../orders/supabaseOrders';
+import { makeLocalOrderId } from '../orders/localOrders';
 
 type CheckoutDraft = {
   id: string;
@@ -11,6 +13,13 @@ type CheckoutDraft = {
   formData: unknown;
   costData: unknown;
   docCount: number;
+};
+
+type QuoteReadyPayload = {
+  formData: unknown;
+  costData: unknown;
+  docCount: number;
+  source: 'manual' | 'bulk_upload';
 };
 
  const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -24,6 +33,7 @@ interface DashboardProps {
 export default function Dashboard({ onLogout }: DashboardProps) {
   const DRAFTS_STORAGE_KEY = 'ed_checkout_drafts';
   const DRAFTS_STORAGE_KEY_V1 = 'ed_checkout_drafts_v1';
+  const LATEST_QUOTE_STORAGE_KEY = 'ed_latest_quote_ready';
   const [isLogoutOpen, setIsLogoutOpen] = useState(false);
   const [isDeleteDraftOpen, setIsDeleteDraftOpen] = useState(false);
   const [deleteDraftId, setDeleteDraftId] = useState<string | null>(null);
@@ -36,6 +46,9 @@ export default function Dashboard({ onLogout }: DashboardProps) {
   const [isDraftsOpen, setIsDraftsOpen] = useState(false);
   const [showDrafts, setShowDrafts] = useState(false);
   const [drafts, setDrafts] = useState<CheckoutDraft[]>([]);
+  const [latestQuote, setLatestQuote] = useState<QuoteReadyPayload | null>(null);
+  const [saveQuoteMessage, setSaveQuoteMessage] = useState<string | null>(null);
+  const [saveQuoteError, setSaveQuoteError] = useState(false);
 
   const loadDrafts = () => {
     try {
@@ -146,6 +159,137 @@ export default function Dashboard({ onLogout }: DashboardProps) {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(LATEST_QUOTE_STORAGE_KEY);
+      const parsed = raw ? (JSON.parse(raw) as unknown) : null;
+      const obj = isRecord(parsed) ? (parsed as Record<string, unknown>) : null;
+      if (!obj) return;
+      const source = obj.source;
+      if (source !== 'manual' && source !== 'bulk_upload') return;
+      setLatestQuote({
+        formData: obj.formData,
+        costData: obj.costData,
+        docCount: readNumber(obj.docCount) || 0,
+        source,
+      });
+    } catch {
+      // ignore
+    }
+
+    const onQuoteReady = (event: Event) => {
+      const detail = (event as CustomEvent).detail as unknown;
+      const obj = isRecord(detail) ? (detail as Record<string, unknown>) : null;
+      if (!obj) return;
+      const source = obj.source;
+      if (source !== 'manual' && source !== 'bulk_upload') return;
+      const nextQuote: QuoteReadyPayload = {
+        formData: obj.formData,
+        costData: obj.costData,
+        docCount: readNumber(obj.docCount) || 0,
+        source,
+      };
+      setLatestQuote(nextQuote);
+      try {
+        localStorage.setItem(LATEST_QUOTE_STORAGE_KEY, JSON.stringify(nextQuote));
+      } catch {
+        // ignore
+      }
+      setSaveQuoteMessage(null);
+      setSaveQuoteError(false);
+    };
+    window.addEventListener('ed_quote_ready', onQuoteReady as EventListener);
+    return () => {
+      window.removeEventListener('ed_quote_ready', onQuoteReady as EventListener);
+    };
+  }, []);
+
+  const saveQuoteToSupabase = async () => {
+    if (!supabase) {
+      setSaveQuoteMessage('Service is currently unavailable. Please try again later.');
+      setSaveQuoteError(true);
+      return;
+    }
+
+    try {
+      const { data } = await supabase.auth.getSession();
+      if (!data?.session?.user?.id) {
+        setSaveQuoteMessage('Please sign in to save this quote.');
+        setSaveQuoteError(true);
+        return;
+      }
+    } catch {
+      setSaveQuoteMessage('Please sign in to save this quote.');
+      setSaveQuoteError(true);
+      return;
+    }
+
+    if (!latestQuote) {
+      setSaveQuoteMessage('No quote available to save yet.');
+      setSaveQuoteError(true);
+      return;
+    }
+
+    const formData = isRecord(latestQuote.formData) ? (latestQuote.formData as Record<string, unknown>) : null;
+    const costData = isRecord(latestQuote.costData) ? (latestQuote.costData as Record<string, unknown>) : null;
+    if (!formData || !costData) {
+      setSaveQuoteMessage('No quote available to save yet.');
+      setSaveQuoteError(true);
+      return;
+    }
+
+    const pricingCity = typeof costData.pricingCity === 'string' ? costData.pricingCity : '';
+    const pickupLocation = isRecord(formData.pickup_location) ? (formData.pickup_location as Record<string, unknown>) : null;
+    const dropoffLocation = isRecord(formData.dropoff_location) ? (formData.dropoff_location as Record<string, unknown>) : null;
+    const pickupCity = pickupLocation && typeof pickupLocation.city === 'string' ? pickupLocation.city : '';
+    const dropoffCity = dropoffLocation && typeof dropoffLocation.city === 'string' ? dropoffLocation.city : '';
+    const routeArea = String(pricingCity || dropoffCity || pickupCity || '').trim();
+
+    const baseSubtotal = readNumber(costData.cost);
+    const formLoadingFee = readNumber((formData as Record<string, unknown>)?.vehicle_loading_fee);
+    const loadingFee = Number.isFinite(formLoadingFee) && formLoadingFee > 0 ? formLoadingFee : 0;
+    const subtotal = Number.isFinite(baseSubtotal) && baseSubtotal > 0 ? baseSubtotal + loadingFee : 0;
+    if (!subtotal) {
+      setSaveQuoteMessage('Quote amount is missing. Please calculate a quote first.');
+      setSaveQuoteError(true);
+      return;
+    }
+
+    const service = isRecord(formData.service) ? (formData.service as Record<string, unknown>) : null;
+    const serviceType = String(service?.service_type ?? 'pickup_one_way').trim() || 'pickup_one_way';
+
+    const orderCode = makeLocalOrderId();
+
+    setSaveQuoteMessage(null);
+    setSaveQuoteError(false);
+    try {
+      await createSavedQuoteOrder({
+        order_code: orderCode,
+        route_area: routeArea,
+        service_type: serviceType,
+        vehicle_type: 'standard',
+        price_before_tax: subtotal,
+        currency: 'CAD',
+        form_data: { ...formData, costEstimate: costData },
+        documents: null,
+      });
+      setSaveQuoteMessage('Saved to Draft Orders. You can make an offer or pay later.');
+      setSaveQuoteError(false);
+      setLatestQuote(null);
+      try {
+        localStorage.removeItem(LATEST_QUOTE_STORAGE_KEY);
+      } catch {
+        // ignore
+      }
+      setShowOrders(true);
+      setShowReceiptHistory(false);
+      setShowDrafts(false);
+    } catch (e) {
+      setSaveQuoteMessage(e instanceof Error ? e.message : 'Failed to save quote');
+      setSaveQuoteError(true);
+    }
+  };
 
   useEffect(() => {
     loadDrafts();
@@ -600,12 +744,37 @@ export default function Dashboard({ onLogout }: DashboardProps) {
               </div>
             </div>
           ) : (
-            <div className="rounded-2xl bg-white border border-gray-200 shadow-sm p-4 sm:p-6">
-              <FileUploadSection
-                onContinueToSignIn={() => {
-                  setIsLogoutOpen(true);
-                }}
-              />
+            <div className="space-y-4">
+              {latestQuote ? (
+                <div className="rounded-2xl bg-white border border-gray-200 shadow-sm p-4 sm:p-6">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                    <div>
+                      <div className="text-base sm:text-lg font-semibold text-gray-900">Quote ready</div>
+                      <div className="mt-1 text-xs sm:text-sm text-gray-600">
+                        Save this quote to your dashboard so you can continue later.
+                      </div>
+                      {saveQuoteMessage ? (
+                        <div className={`mt-2 text-sm font-medium ${saveQuoteError ? 'text-red-600' : 'text-emerald-700'}`}>{saveQuoteMessage}</div>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void saveQuoteToSupabase()}
+                      className="inline-flex justify-center rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-gray-800 transition-colors"
+                    >
+                      Save Quote
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="rounded-2xl bg-white border border-gray-200 shadow-sm p-4 sm:p-6">
+                <FileUploadSection
+                  onContinueToSignIn={() => {
+                    setIsLogoutOpen(true);
+                  }}
+                />
+              </div>
             </div>
           )}
         </div>

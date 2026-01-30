@@ -593,6 +593,14 @@ const minimizeCostDataForStorage = (input: CostData | null | undefined): CostDat
   };
 };
 
+const emitQuoteReady = (payload: { formData: unknown; costData: unknown; docCount: number; source: 'manual' | 'bulk_upload' }) => {
+  try {
+    window.dispatchEvent(new CustomEvent('ed_quote_ready', { detail: payload }));
+  } catch {
+    // ignore
+  }
+};
+
 type FormData = {
   service: {
     service_type: ServiceType;
@@ -1628,6 +1636,19 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
         setDraftDocCount(typeof nextDocCount === 'number' && Number.isFinite(nextDocCount) ? nextDocCount : null);
         setActiveDraftId(draftId);
 
+        if (hasCost) {
+          try {
+            emitQuoteReady({
+              formData: restoredFormData,
+              costData: minimizeCostDataForStorage(nextCostData as CostData),
+              docCount: typeof nextDocCount === 'number' && Number.isFinite(nextDocCount) ? nextDocCount : uploadedFilesMeta.length,
+              source: draftSource === 'manual' ? 'manual' : 'bulk_upload',
+            });
+          } catch {
+            // ignore
+          }
+        }
+
         if (draftSource === 'manual') {
           setUploadedFiles([]);
           setPickupSearch(String(restoredFormData?.pickup_location?.address ?? '').trim());
@@ -1680,7 +1701,7 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
         }
 
         setShowCheckout(false);
-        setShowCostEstimate(false);
+        setShowCostEstimate(Boolean(hasCost));
         setSubmitMessage(
           needsExtraction
             ? 'Draft loaded. Please click View Quote Now to process the release form.'
@@ -2999,6 +3020,16 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
     const nextCost = { ...estimate, pricingStatus: 'estimated' as const };
     setCostData(nextCost);
     setManualWizardError(null);
+    try {
+      emitQuoteReady({
+        formData,
+        costData: minimizeCostDataForStorage(nextCost),
+        docCount: 0,
+        source: 'manual',
+      });
+    } catch {
+      // ignore
+    }
     return true;
   };
 
@@ -3800,6 +3831,16 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
         if (estimate) {
           const nextCost = { ...estimate, pricingStatus: 'estimated' as const };
           setCostData(nextCost);
+          try {
+            emitQuoteReady({
+              formData,
+              costData: minimizeCostDataForStorage(nextCost),
+              docCount: uploadedFiles.length,
+              source: 'bulk_upload',
+            });
+          } catch {
+            // ignore
+          }
           if (!isLoggedIn) {
             try {
               await saveDraftBeforeSignIn({ formData, costData: nextCost });

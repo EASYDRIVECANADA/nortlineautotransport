@@ -1,6 +1,15 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
-import { listMyOrders, getOrderEventsForMyOrder, getAccessToken, type DbOrderEventRow, type DbOrderRow } from '../orders/supabaseOrders';
+import {
+  createOfferForOrder,
+  getMyPendingOfferForOrder,
+  listMyOrders,
+  getOrderEventsForMyOrder,
+  getAccessToken,
+  type DbOrderEventRow,
+  type DbOrderRow,
+  type DbOrderStage,
+} from '../orders/supabaseOrders';
 import { supabase } from '../lib/supabaseClient';
 import { getLocalOrderById, listLocalOrders, updateLocalOrderPaymentStatus } from '../orders/localOrders';
 
@@ -12,25 +21,8 @@ interface LocalOrdersProps {
 export default function LocalOrders({ onBack, embed = false }: LocalOrdersProps) {
   const isLocalDev = import.meta.env.DEV && window.location.hostname === 'localhost';
 
-  const [searchId, setSearchId] = useState('');
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [orders, setOrders] = useState<
-    Array<Pick<DbOrderRow, 'id' | 'order_code' | 'status' | 'payment_status' | 'created_at' | 'updated_at'>>
-  >([]);
-  const [ordersLoading, setOrdersLoading] = useState(false);
-  const [ordersError, setOrdersError] = useState<string | null>(null);
-
-  const [events, setEvents] = useState<DbOrderEventRow[]>([]);
-  const [eventsLoading, setEventsLoading] = useState(false);
-  const [eventsError, setEventsError] = useState<string | null>(null);
-
-  const [payLoading, setPayLoading] = useState(false);
-  const [payError, setPayError] = useState<string | null>(null);
-
-  useEffect(() => {
+  const reloadOrders = useCallback(async () => {
     if (isLocalDev) {
-      setOrdersLoading(false);
-      setOrdersError(null);
       try {
         const local = listLocalOrders();
         const mapped = local.map((o) => ({
@@ -38,13 +30,20 @@ export default function LocalOrders({ onBack, embed = false }: LocalOrdersProps)
             order_code: o.id,
             status: o.status,
             payment_status: (o.payment_status ?? 'unpaid') as DbOrderRow['payment_status'],
+            order_stage: 'pending_payment' as DbOrderStage,
+            price_before_tax: Number(o?.totals?.subtotal ?? 0),
+            final_price_before_tax: null,
+            route_area: String(o?.route_area ?? ''),
             created_at: o.created_at,
             updated_at: o.updated_at,
           }));
         mapped.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
         setOrders(mapped);
+        setOrdersError(null);
       } catch {
         setOrders([]);
+      } finally {
+        setOrdersLoading(false);
       }
       return;
     }
@@ -56,30 +55,58 @@ export default function LocalOrders({ onBack, embed = false }: LocalOrdersProps)
       return;
     }
 
-    let active = true;
     setOrdersLoading(true);
     setOrdersError(null);
-    listMyOrders()
-      .then((rows) => {
-        if (!active) return;
-        setOrders(rows);
-        // default-select newest (rows already ordered desc by created_at in listMyOrders)
-        // selection will only happen if user hasn't selected one yet
-        setSelectedId((prev) => (prev ? prev : rows[0]?.id ?? null));
-      })
-      .catch((err) => {
-        if (!active) return;
-        setOrdersError(err instanceof Error ? err.message : 'Failed to load orders');
-      })
-      .finally(() => {
-        if (!active) return;
-        setOrdersLoading(false);
-      });
-
-    return () => {
-      active = false;
-    };
+    try {
+      const rows = await listMyOrders();
+      setOrders(rows);
+      setSelectedId((prev) => (prev ? prev : rows[0]?.id ?? null));
+    } catch (err) {
+      setOrdersError(err instanceof Error ? err.message : 'Failed to load orders');
+    } finally {
+      setOrdersLoading(false);
+    }
   }, [isLocalDev]);
+
+  const [searchId, setSearchId] = useState('');
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [orders, setOrders] = useState<
+    Array<
+      Pick<
+        DbOrderRow,
+        | 'id'
+        | 'order_code'
+        | 'status'
+        | 'payment_status'
+        | 'order_stage'
+        | 'price_before_tax'
+        | 'final_price_before_tax'
+        | 'route_area'
+        | 'created_at'
+        | 'updated_at'
+      >
+    >
+  >([]);
+  const [ordersLoading, setOrdersLoading] = useState(false);
+  const [ordersError, setOrdersError] = useState<string | null>(null);
+
+  const [events, setEvents] = useState<DbOrderEventRow[]>([]);
+  const [eventsLoading, setEventsLoading] = useState(false);
+  const [eventsError, setEventsError] = useState<string | null>(null);
+
+  const [payLoading, setPayLoading] = useState(false);
+  const [payError, setPayError] = useState<string | null>(null);
+
+  const [offerOpen, setOfferOpen] = useState(false);
+  const [offerAmount, setOfferAmount] = useState('');
+  const [offerNotes, setOfferNotes] = useState('');
+  const [offerLoading, setOfferLoading] = useState(false);
+  const [offerError, setOfferError] = useState<string | null>(null);
+  const [offerSuccess, setOfferSuccess] = useState<string | null>(null);
+
+  useEffect(() => {
+    void reloadOrders();
+  }, [reloadOrders]);
 
   // When orders list changes and nothing is selected yet, select the most recent
   useEffect(() => {
@@ -87,6 +114,70 @@ export default function LocalOrders({ onBack, embed = false }: LocalOrdersProps)
       setSelectedId(orders[0].id);
     }
   }, [orders, selectedId]);
+
+  const stageBuckets = useMemo(() => {
+    const normalizeStage = (s: unknown): DbOrderStage => {
+      const v = String(s ?? '').trim();
+      if (v === 'draft' || v === 'in_negotiation' || v === 'pending_payment' || v === 'order_dispatched' || v === 'order_completed') return v;
+      return 'pending_payment';
+    };
+    const items = orders.map((o) => ({ ...o, order_stage: normalizeStage((o as { order_stage?: unknown }).order_stage) }));
+    const byStage = (stage: DbOrderStage) => items.filter((o) => (o.order_stage ?? 'pending_payment') === stage);
+    return {
+      draft: byStage('draft'),
+      in_negotiation: byStage('in_negotiation'),
+      pending_payment: byStage('pending_payment'),
+      order_dispatched: byStage('order_dispatched'),
+      order_completed: byStage('order_completed'),
+    };
+  }, [orders]);
+
+  const formatAmount = (row: (typeof orders)[number]) => {
+    const finalRaw = Number((row as { final_price_before_tax?: unknown }).final_price_before_tax);
+    const baseRaw = Number((row as { price_before_tax?: unknown }).price_before_tax);
+    const v = Number.isFinite(finalRaw) && finalRaw > 0 ? finalRaw : baseRaw;
+    return Number.isFinite(v) && v > 0 ? `$${v.toFixed(2)}` : '-';
+  };
+
+  const openOffer = () => {
+    setOfferError(null);
+    setOfferSuccess(null);
+    setOfferAmount('');
+    setOfferNotes('');
+    setOfferOpen(true);
+  };
+
+  const submitOffer = async () => {
+    if (!selectedOrder) return;
+    if (!supabase) {
+      setOfferError('Service is currently unavailable. Please try again later.');
+      return;
+    }
+    const amount = Number(offerAmount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setOfferError('Please enter a valid offer amount.');
+      return;
+    }
+    setOfferLoading(true);
+    setOfferError(null);
+    setOfferSuccess(null);
+    try {
+      const pending = await getMyPendingOfferForOrder(selectedOrder.id);
+      if (pending) {
+        setOfferError('You already have a pending offer for this order. Please wait for admin review.');
+        return;
+      }
+      await createOfferForOrder(selectedOrder.id, amount, offerNotes);
+      setOfferSuccess('Offer submitted. You will see it under In Negotiation.');
+      setOfferOpen(false);
+      const rows = await listMyOrders();
+      setOrders(rows);
+    } catch (e) {
+      setOfferError(e instanceof Error ? e.message : 'Failed to submit offer');
+    } finally {
+      setOfferLoading(false);
+    }
+  };
 
   const selectedOrder = useMemo(() => {
     const id = String(selectedId ?? '').trim();
@@ -164,6 +255,11 @@ export default function LocalOrders({ onBack, embed = false }: LocalOrdersProps)
 
   const startPayment = async () => {
     if (!selectedOrder) return;
+    const stage = String((selectedOrder as { order_stage?: unknown }).order_stage ?? '').trim();
+    if (stage && stage !== 'pending_payment') {
+      setPayError('This order is not ready for payment yet.');
+      return;
+    }
     setPayLoading(true);
     setPayError(null);
     try {
@@ -177,6 +273,10 @@ export default function LocalOrders({ onBack, embed = false }: LocalOrdersProps)
               order_code: o.id,
               status: o.status,
               payment_status: (o.payment_status ?? 'unpaid') as DbOrderRow['payment_status'],
+              order_stage: 'pending_payment' as DbOrderStage,
+              price_before_tax: Number(o?.totals?.subtotal ?? 0),
+              final_price_before_tax: null,
+              route_area: String(o?.route_area ?? ''),
               created_at: o.created_at,
               updated_at: o.updated_at,
             }))
@@ -252,58 +352,262 @@ export default function LocalOrders({ onBack, embed = false }: LocalOrdersProps)
           </div>
         )}
 
+        {!ordersLoading && !ordersError && orders.length === 0 ? (
+          <div className="mt-4 rounded-2xl border border-gray-200 bg-white p-4">
+            <div className="text-sm font-semibold text-gray-900">No orders yet</div>
+            <div className="mt-1 text-xs text-gray-600">
+              If you just saved a quote, it will appear here under “Draft Orders”. If you’re signed out, please sign in again.
+            </div>
+            <div className="mt-3">
+              <button
+                type="button"
+                onClick={() => void reloadOrders()}
+                className="inline-flex justify-center rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-gray-800 transition-colors"
+              >
+                Refresh
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {ordersError ? (
+          <div className="mt-4 rounded-2xl border border-gray-200 bg-white p-4">
+            <div className="text-sm font-semibold text-gray-900">Couldn’t load orders</div>
+            <div className="mt-1 text-xs text-gray-600">{ordersError}</div>
+            <div className="mt-3">
+              <button
+                type="button"
+                onClick={() => void reloadOrders()}
+                className="inline-flex justify-center rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-gray-800 transition-colors"
+              >
+                Retry
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {offerOpen && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center px-4"
+            role="dialog"
+            aria-modal="true"
+            onMouseDown={(e) => {
+              if (e.target === e.currentTarget) setOfferOpen(false);
+            }}
+          >
+            <div className="absolute inset-0 bg-black/50 backdrop-blur-sm"></div>
+            <div className="relative w-full max-w-md rounded-2xl bg-white shadow-2xl border border-gray-200 overflow-hidden">
+              <div className="px-4 sm:px-6 py-4 sm:py-5 border-b border-gray-100">
+                <div className="text-base sm:text-lg font-semibold text-gray-900">Make an Offer</div>
+                <div className="mt-1 text-xs sm:text-sm text-gray-600">Enter an amount and optional notes. Admin will review.</div>
+              </div>
+              <div className="px-4 sm:px-6 py-4 sm:py-5 space-y-4">
+                {offerError ? <div className="text-sm font-medium text-red-600">{offerError}</div> : null}
+                {offerSuccess ? <div className="text-sm font-medium text-emerald-700">{offerSuccess}</div> : null}
+                <div>
+                  <label className="block text-sm font-semibold text-gray-900">Offer amount (CAD)</label>
+                  <input
+                    value={offerAmount}
+                    onChange={(e) => setOfferAmount(e.target.value)}
+                    inputMode="decimal"
+                    placeholder="e.g. 599"
+                    className="mt-2 w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-900">Notes (optional)</label>
+                  <textarea
+                    value={offerNotes}
+                    onChange={(e) => setOfferNotes(e.target.value)}
+                    rows={4}
+                    placeholder="Tell us what price you want and why (discount, special situation, etc.)"
+                    className="mt-2 w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm"
+                  />
+                </div>
+              </div>
+              <div className="border-t border-gray-200 bg-white p-4">
+                <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setOfferOpen(false)}
+                    className="inline-flex justify-center rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm font-semibold text-gray-800 hover:bg-gray-50 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={offerLoading}
+                    onClick={() => void submitOffer()}
+                    className="inline-flex justify-center rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-gray-800 transition-colors disabled:opacity-60"
+                  >
+                    {offerLoading ? 'Submitting…' : 'Submit offer'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="mt-5 grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
           <div className="lg:col-span-1">
             <div className="rounded-2xl bg-white border border-gray-200 shadow-sm overflow-hidden">
-              <div className="p-4 border-b border-gray-100">
-                <div className="text-sm font-semibold text-gray-900">Find an order</div>
-                <div className="mt-3 flex flex-col sm:flex-row gap-2">
-                  <input
-                    value={searchId}
-                    onChange={(e) => setSearchId(e.target.value)}
-                    placeholder="Enter Order ID (e.g. EDC-YYYYMMDD-XXXXXX)"
-                    className="w-full sm:flex-1 rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const found = searched;
-                      if (found) openOrder(found.id);
-                    }}
-                    className="w-full sm:w-auto rounded-xl bg-gray-900 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-800 transition-colors"
-                  >
-                    Open
-                  </button>
-                </div>
-                {searchId.trim() && !searched && <div className="mt-2 text-xs text-gray-500">No order found.</div>}
-              </div>
-
               <div className="p-4">
-                <div className="text-sm font-semibold text-gray-900">Recent orders</div>
-                <div className="mt-3 space-y-2">
-                  {ordersLoading ? (
-                    <div className="text-sm text-gray-600">Loading…</div>
-                  ) : ordersError ? (
-                    <div className="text-sm text-gray-600">{ordersError}</div>
-                  ) : orders.length === 0 ? (
-                    <div className="text-sm text-gray-600">No orders yet.</div>
-                  ) : (
-                    orders.slice(0, 25).map((o) => (
-                      <button
-                        key={o.id}
-                        type="button"
-                        onClick={() => openOrder(o.id)}
-                        className={`w-full text-left rounded-xl border px-3 py-2 transition-colors ${
-                          selectedId === o.id ? 'border-cyan-400 bg-cyan-50' : 'border-gray-200 bg-white hover:bg-gray-50'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="text-sm font-semibold text-gray-900 truncate">{o.order_code}</div>
-                          <div className="text-xs font-semibold text-gray-700">{o.status}</div>
-                        </div>
-                      </button>
-                    ))
-                  )}
+                <div className="text-sm font-semibold text-gray-900">Your orders</div>
+
+                {ordersLoading ? <div className="mt-2 text-sm text-gray-600">Loading…</div> : null}
+                {ordersError ? <div className="mt-2 text-sm text-gray-600">{ordersError}</div> : null}
+
+                <div className="mt-3">
+                  <div className="text-xs font-semibold text-gray-600">Draft Orders</div>
+                  <div className="mt-2 space-y-2">
+                    {stageBuckets.draft.length === 0 ? (
+                      <div className="text-sm text-gray-600">No draft quotes.</div>
+                    ) : (
+                      stageBuckets.draft.slice(0, 10).map((o) => (
+                        <button
+                          key={o.id}
+                          type="button"
+                          onClick={() => openOrder(o.id)}
+                          className={`w-full text-left rounded-xl border px-3 py-2 transition-colors ${
+                            selectedId === o.id ? 'border-cyan-400 bg-cyan-50' : 'border-gray-200 bg-white hover:bg-gray-50'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="text-sm font-semibold text-gray-900 truncate">{o.order_code}</div>
+                            <div className="text-xs font-semibold text-gray-700">{formatAmount(o)}</div>
+                          </div>
+                          <div className="mt-1 text-xs text-gray-600 truncate">{String((o as { route_area?: unknown }).route_area ?? '').trim() || '-'}</div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-4">
+                  <div className="text-xs font-semibold text-gray-600">In Negotiation</div>
+                  <div className="mt-2 space-y-2">
+                    {stageBuckets.in_negotiation.length === 0 ? (
+                      <div className="text-sm text-gray-600">No offers in review.</div>
+                    ) : (
+                      stageBuckets.in_negotiation.slice(0, 10).map((o) => (
+                        <button
+                          key={o.id}
+                          type="button"
+                          onClick={() => openOrder(o.id)}
+                          className={`w-full text-left rounded-xl border px-3 py-2 transition-colors ${
+                            selectedId === o.id ? 'border-cyan-400 bg-cyan-50' : 'border-gray-200 bg-white hover:bg-gray-50'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="text-sm font-semibold text-gray-900 truncate">{o.order_code}</div>
+                            <div className="text-xs font-semibold text-gray-700">{formatAmount(o)}</div>
+                          </div>
+                          <div className="mt-1 text-xs text-gray-600 truncate">{String((o as { route_area?: unknown }).route_area ?? '').trim() || '-'}</div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-4">
+                  <div className="text-xs font-semibold text-gray-600">Pending Payment</div>
+                  <div className="mt-2 space-y-2">
+                    {stageBuckets.pending_payment.length === 0 ? (
+                      <div className="text-sm text-gray-600">No pending payments.</div>
+                    ) : (
+                      stageBuckets.pending_payment.slice(0, 10).map((o) => (
+                        <button
+                          key={o.id}
+                          type="button"
+                          onClick={() => openOrder(o.id)}
+                          className={`w-full text-left rounded-xl border px-3 py-2 transition-colors ${
+                            selectedId === o.id ? 'border-cyan-400 bg-cyan-50' : 'border-gray-200 bg-white hover:bg-gray-50'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="text-sm font-semibold text-gray-900 truncate">{o.order_code}</div>
+                            <div className="text-xs font-semibold text-gray-700">{formatAmount(o)}</div>
+                          </div>
+                          <div className="mt-1 text-xs text-gray-600 truncate">{String((o as { route_area?: unknown }).route_area ?? '').trim() || '-'}</div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-4">
+                  <div className="text-xs font-semibold text-gray-600">Order Dispatched</div>
+                  <div className="mt-2 space-y-2">
+                    {stageBuckets.order_dispatched.length === 0 ? (
+                      <div className="text-sm text-gray-600">No dispatched orders.</div>
+                    ) : (
+                      stageBuckets.order_dispatched.slice(0, 10).map((o) => (
+                        <button
+                          key={o.id}
+                          type="button"
+                          onClick={() => openOrder(o.id)}
+                          className={`w-full text-left rounded-xl border px-3 py-2 transition-colors ${
+                            selectedId === o.id ? 'border-cyan-400 bg-cyan-50' : 'border-gray-200 bg-white hover:bg-gray-50'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="text-sm font-semibold text-gray-900 truncate">{o.order_code}</div>
+                            <div className="text-xs font-semibold text-gray-700">{formatAmount(o)}</div>
+                          </div>
+                          <div className="mt-1 text-xs text-gray-600 truncate">{String((o as { route_area?: unknown }).route_area ?? '').trim() || '-'}</div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-4">
+                  <div className="text-xs font-semibold text-gray-600">Order Completed</div>
+                  <div className="mt-2 space-y-2">
+                    {stageBuckets.order_completed.length === 0 ? (
+                      <div className="text-sm text-gray-600">No completed orders.</div>
+                    ) : (
+                      stageBuckets.order_completed.slice(0, 10).map((o) => (
+                        <button
+                          key={o.id}
+                          type="button"
+                          onClick={() => openOrder(o.id)}
+                          className={`w-full text-left rounded-xl border px-3 py-2 transition-colors ${
+                            selectedId === o.id ? 'border-cyan-400 bg-cyan-50' : 'border-gray-200 bg-white hover:bg-gray-50'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="text-sm font-semibold text-gray-900 truncate">{o.order_code}</div>
+                            <div className="text-xs font-semibold text-gray-700">{formatAmount(o)}</div>
+                          </div>
+                          <div className="mt-1 text-xs text-gray-600 truncate">{String((o as { route_area?: unknown }).route_area ?? '').trim() || '-'}</div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-4">
+                  <div className="text-sm font-semibold text-gray-900">Find an order</div>
+                  <div className="mt-3 flex flex-col sm:flex-row gap-2">
+                    <input
+                      value={searchId}
+                      onChange={(e) => setSearchId(e.target.value)}
+                      placeholder="Enter Order ID (e.g. EDC-YYYYMMDD-XXXXXX)"
+                      className="w-full sm:flex-1 rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const found = searched;
+                        if (found) openOrder(found.id);
+                      }}
+                      className="w-full sm:w-auto rounded-xl bg-gray-900 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-800 transition-colors"
+                    >
+                      Open
+                    </button>
+                  </div>
+                  {searchId.trim() && !searched && <div className="mt-2 text-xs text-gray-500">No order found.</div>}
                 </div>
               </div>
             </div>
@@ -326,8 +630,19 @@ export default function LocalOrders({ onBack, embed = false }: LocalOrdersProps)
                       <div className="mt-1 text-sm font-semibold text-gray-900 break-all">{selectedOrder.order_code}</div>
                     </div>
                     <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
-                      <div className="text-xs font-medium text-gray-500">Status</div>
+                      <div className="text-xs font-medium text-gray-500">Stage</div>
+                      <div className="mt-1 text-sm font-semibold text-gray-900">{String((selectedOrder as { order_stage?: unknown }).order_stage ?? 'pending_payment')}</div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+                      <div className="text-xs font-medium text-gray-500">Shipping status</div>
                       <div className="mt-1 text-sm font-semibold text-gray-900">{selectedOrder.status}</div>
+                    </div>
+                    <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+                      <div className="text-xs font-medium text-gray-500">Price (before tax)</div>
+                      <div className="mt-1 text-sm font-semibold text-gray-900">{formatAmount(selectedOrder)}</div>
                     </div>
                   </div>
 
@@ -345,7 +660,32 @@ export default function LocalOrders({ onBack, embed = false }: LocalOrdersProps)
                     <div className="mt-1 text-sm text-gray-800">{events?.[0]?.note ?? '-'}</div>
                   </div>
 
-                  {selectedOrder.payment_status !== 'paid' && (
+                  {String((selectedOrder as { order_stage?: unknown }).order_stage ?? '') === 'draft' && (
+                    <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                        <div>
+                          <div className="text-sm font-semibold text-gray-900">Negotiation</div>
+                          <div className="text-xs text-gray-600">Request a manual price adjustment.</div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={openOffer}
+                          className="inline-flex justify-center rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-gray-800 transition-colors"
+                        >
+                          Make an Offer
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {String((selectedOrder as { order_stage?: unknown }).order_stage ?? '') === 'in_negotiation' && (
+                    <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                      <div className="text-sm font-semibold text-gray-900">Offer submitted</div>
+                      <div className="mt-1 text-xs text-gray-600">Your offer is under review. You’ll be able to pay once approved.</div>
+                    </div>
+                  )}
+
+                  {String((selectedOrder as { order_stage?: unknown }).order_stage ?? '') === 'pending_payment' && selectedOrder.payment_status !== 'paid' && (
                     <div className="rounded-2xl border border-gray-200 bg-white p-4">
                       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                         <div>

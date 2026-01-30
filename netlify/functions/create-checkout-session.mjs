@@ -52,15 +52,17 @@ export const handler = async (event) => {
       : supabaseAuth;
 
     const selectFields = supabaseServiceRoleKey
-      ? 'id, order_code, price_before_tax, currency, user_id, payment_status, route_area, form_data'
-      : 'id, order_code, price_before_tax, currency, payment_status, route_area, form_data';
+      ? 'id, order_code, price_before_tax, final_price_before_tax, currency, user_id, payment_status, order_stage, route_area, form_data'
+      : 'id, order_code, price_before_tax, final_price_before_tax, currency, payment_status, order_stage, route_area, form_data';
 
     const { data: order, error: orderErr } = await db.from('orders').select(selectFields).eq('order_code', orderCode).maybeSingle();
 
     if (orderErr || !order) return { statusCode: 404, body: 'Order not found' };
     if (supabaseServiceRoleKey && order.user_id !== userId) return { statusCode: 403, body: 'Forbidden' };
 
-    const amount = Number(order.price_before_tax);
+    const finalAmountRaw = Number(order.final_price_before_tax);
+    const fallbackAmountRaw = Number(order.price_before_tax);
+    const amount = Number.isFinite(finalAmountRaw) && finalAmountRaw > 0 ? finalAmountRaw : fallbackAmountRaw;
     if (!Number.isFinite(amount) || amount <= 0) return { statusCode: 400, body: 'Invalid order amount' };
 
     const orderFormData = order?.form_data && typeof order.form_data === 'object' ? order.form_data : null;
@@ -196,7 +198,10 @@ export const handler = async (event) => {
     });
 
     try {
-      await db.from('orders').update({ payment_status: 'pending', stripe_session_id: session.id }).eq('id', order.id);
+      await db
+        .from('orders')
+        .update({ payment_status: 'pending', stripe_session_id: session.id, order_stage: 'pending_payment' })
+        .eq('id', order.id);
     } catch {
       // ignore
     }

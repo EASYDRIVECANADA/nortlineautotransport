@@ -51,19 +51,24 @@ export const handler = async (event) => {
 
     const { data: orderRow } = await supabaseAdmin
       .from('orders')
-      .select('id, order_code, user_id, customer_email, route_area, price_before_tax, currency')
+      .select('id, order_code, user_id, customer_email, route_area, price_before_tax, final_price_before_tax, currency, order_stage')
       .eq('id', orderId)
       .maybeSingle();
 
     const userId = orderRow?.user_id;
     const routeArea = String(orderRow?.route_area ?? '').trim().toLowerCase();
-    const subtotal = Number(orderRow?.price_before_tax);
-    const safeSubtotal = Number.isFinite(subtotal) && subtotal >= 0 ? subtotal : 0;
+    const finalSubtotal = Number(orderRow?.final_price_before_tax);
+    const fallbackSubtotal = Number(orderRow?.price_before_tax);
+    const chosenSubtotal = Number.isFinite(finalSubtotal) && finalSubtotal > 0 ? finalSubtotal : fallbackSubtotal;
+    const safeSubtotal = Number.isFinite(chosenSubtotal) && chosenSubtotal >= 0 ? chosenSubtotal : 0;
     const isQc = routeArea.includes('montreal') || routeArea.includes('quebec');
     const taxRate = isQc ? 0.14975 : 0.13;
     const taxNote = isQc ? 'QC (GST+QST)' : 'ON (HST)';
     const tax = Math.round(safeSubtotal * taxRate * 100) / 100;
     const total = Math.round((safeSubtotal + tax) * 100) / 100;
+
+    const currentStage = String(orderRow?.order_stage ?? '').trim();
+    const nextStage = currentStage === 'draft' || currentStage === 'in_negotiation' ? 'pending_payment' : currentStage;
 
     await supabaseAdmin
       .from('orders')
@@ -72,6 +77,7 @@ export const handler = async (event) => {
         stripe_payment_intent_id: session.payment_intent || null,
         updated_at: now,
         status: 'Scheduled',
+        order_stage: nextStage || 'pending_payment',
       })
       .eq('id', orderId);
 

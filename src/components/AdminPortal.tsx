@@ -1,7 +1,13 @@
 import { useEffect, useState } from 'react';
-import { KeyRound, Lock, Pencil, Plus, ShieldCheck, Unlock, Users } from 'lucide-react';
+import { Gavel, KeyRound, Lock, Pencil, Plus, ShieldCheck, Unlock, Users } from 'lucide-react';
 import AdminPanel from './AdminPanel';
 import { supabase } from '../lib/supabaseClient';
+import {
+  listPendingOffersAsStaff,
+  updateOfferAsStaff,
+  updateOrderPricingAndStageAsStaff,
+  type StaffOfferRow,
+} from '../orders/supabaseOrders';
 import {
   DEFAULT_DISTANCE_RATE_PER_KM,
   OFFICIAL_CITY_TOTAL_PRICES,
@@ -104,6 +110,7 @@ export default function AdminPortal({ onExit }: AdminPortalProps) {
   const [showEmployees, setShowEmployees] = useState(false);
   const [showPricing, setShowPricing] = useState(false);
   const [showUsers, setShowUsers] = useState(false);
+  const [showOffers, setShowOffers] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
@@ -122,6 +129,12 @@ export default function AdminPortal({ onExit }: AdminPortalProps) {
 
   const [pricingDraft, setPricingDraft] = useState<Record<string, string>>({});
   const [distanceRateDraft, setDistanceRateDraft] = useState('');
+
+  const [offers, setOffers] = useState<StaffOfferRow[]>([]);
+  const [offersLoading, setOffersLoading] = useState(false);
+  const [offersActionLoading, setOffersActionLoading] = useState<string | null>(null);
+  const [offersQuery, setOffersQuery] = useState('');
+  const [offerAdminNotes, setOfferAdminNotes] = useState<Record<string, string>>({});
 
   const readLocalEmployees = (): LocalEmployeeRecord[] => {
     try {
@@ -243,6 +256,74 @@ export default function AdminPortal({ onExit }: AdminPortalProps) {
     setNewEmpName('');
     setShowEmployees(true);
     void loadEmployees();
+  };
+
+  const loadOffers = async () => {
+    if (!session || session.role !== 'admin') return;
+    if (isLocalDev) {
+      setOffers([]);
+      setOffersLoading(false);
+      return;
+    }
+    setOffersLoading(true);
+    setError(null);
+    try {
+      const rows = await listPendingOffersAsStaff();
+      setOffers(rows);
+      setOfferAdminNotes((prev) => {
+        const next = { ...prev };
+        for (const r of rows) {
+          if (typeof next[r.id] !== 'string') next[r.id] = '';
+        }
+        return next;
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load offers');
+    } finally {
+      setOffersLoading(false);
+    }
+  };
+
+  const openOffers = () => {
+    if (!session || session.role !== 'admin') return;
+    setMessage(null);
+    setError(null);
+    setOffersQuery('');
+    setShowOffers(true);
+    void loadOffers();
+  };
+
+  const resolveOffer = async (offer: StaffOfferRow, action: 'approved' | 'declined') => {
+    if (!session || session.role !== 'admin') return;
+    if (isLocalDev) {
+      setError('Offers are not available in local dev mode.');
+      return;
+    }
+
+    const adminNote = String(offerAdminNotes[offer.id] ?? '').trim() || null;
+    setOffersActionLoading(offer.id);
+    setMessage(null);
+    setError(null);
+    try {
+      await updateOfferAsStaff(offer.id, action, adminNote);
+      if (action === 'approved') {
+        await updateOrderPricingAndStageAsStaff(offer.order_id, {
+          final_price_before_tax: Number(offer.offer_amount),
+          order_stage: 'pending_payment',
+        });
+      } else {
+        await updateOrderPricingAndStageAsStaff(offer.order_id, {
+          final_price_before_tax: null,
+          order_stage: 'draft',
+        });
+      }
+      setMessage(action === 'approved' ? 'Offer approved.' : 'Offer declined.');
+      await loadOffers();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to update offer');
+    } finally {
+      setOffersActionLoading(null);
+    }
   };
 
   const createEmployee = async () => {
@@ -542,6 +623,7 @@ export default function AdminPortal({ onExit }: AdminPortalProps) {
     setShowEmployees(false);
     setShowPricing(false);
     setShowUsers(false);
+    setShowOffers(false);
     setSession(null);
   };
 
@@ -858,6 +940,14 @@ export default function AdminPortal({ onExit }: AdminPortalProps) {
                     </button>
                     <button
                       type="button"
+                      onClick={openOffers}
+                      className="inline-flex items-center gap-2 rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50 transition-colors"
+                    >
+                      <Gavel className="h-4 w-4" />
+                      <span className="hidden sm:inline">Offers</span>
+                    </button>
+                    <button
+                      type="button"
                       onClick={openSecurity}
                       className="inline-flex items-center gap-2 rounded-xl bg-cyan-600 px-3 py-2 text-sm font-semibold text-white hover:bg-cyan-700 transition-colors"
                     >
@@ -887,7 +977,7 @@ export default function AdminPortal({ onExit }: AdminPortalProps) {
           </div>
         </div>
 
-        {(showSecurity || showEmployees || showPricing || showUsers) && (
+        {(showSecurity || showEmployees || showPricing || showUsers || showOffers) && (
           <div
             className="fixed inset-0 z-50 flex items-center justify-center px-4"
             role="dialog"
@@ -898,6 +988,7 @@ export default function AdminPortal({ onExit }: AdminPortalProps) {
                 setShowEmployees(false);
                 setShowPricing(false);
                 setShowUsers(false);
+                setShowOffers(false);
                 setError(null);
                 setMessage(null);
               }
@@ -910,14 +1001,16 @@ export default function AdminPortal({ onExit }: AdminPortalProps) {
                   ? 'relative w-full max-w-3xl rounded-2xl bg-white shadow-2xl border border-gray-200 overflow-hidden'
                   : showEmployees
                     ? 'relative w-full max-w-3xl rounded-2xl bg-white shadow-2xl border border-gray-200 overflow-hidden'
-                  : showUsers
-                    ? 'relative w-full max-w-4xl rounded-2xl bg-white shadow-2xl border border-gray-200 overflow-hidden'
-                    : 'relative w-full max-w-2xl rounded-2xl bg-white shadow-2xl border border-gray-200 overflow-hidden'
+                    : showUsers
+                      ? 'relative w-full max-w-4xl rounded-2xl bg-white shadow-2xl border border-gray-200 overflow-hidden'
+                      : showOffers
+                        ? 'relative w-full max-w-4xl rounded-2xl bg-white shadow-2xl border border-gray-200 overflow-hidden'
+                        : 'relative w-full max-w-2xl rounded-2xl bg-white shadow-2xl border border-gray-200 overflow-hidden'
               }
             >
               <div className="px-5 py-4 border-b border-gray-100">
                 <div className="text-base font-bold text-gray-900">
-                  {showEmployees ? 'Employees' : showUsers ? 'Users' : showPricing ? 'Pricing' : 'Security'}
+                  {showEmployees ? 'Employees' : showUsers ? 'Users' : showOffers ? 'Offers' : showPricing ? 'Pricing' : 'Security'}
                 </div>
                 <div className="text-xs text-gray-600">Admin only</div>
               </div>
@@ -1228,6 +1321,116 @@ export default function AdminPortal({ onExit }: AdminPortalProps) {
                   </>
                 ) : null}
 
+                {showOffers ? (
+                  <>
+                    <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                        <div>
+                          <div className="text-sm font-semibold text-gray-900">Pending offers</div>
+                          <div className="mt-1 text-xs text-gray-600">Approve or decline customer offers (one active pending offer per order).</div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void loadOffers()}
+                          disabled={offersLoading}
+                          className="inline-flex justify-center rounded-xl bg-cyan-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-cyan-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                        >
+                          {offersLoading ? 'Loading...' : 'Refresh'}
+                        </button>
+                      </div>
+
+                      <input
+                        value={offersQuery}
+                        onChange={(e) => setOffersQuery(e.target.value)}
+                        className="mt-3 w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm"
+                        placeholder="Search by order code or user id"
+                      />
+
+                      <div className="mt-4 overflow-auto max-h-[55vh]">
+                        <div className="min-w-[920px] grid grid-cols-12 gap-2 text-xs font-semibold text-gray-600 px-2 pb-2 border-b border-gray-200">
+                          <div className="col-span-2">Order</div>
+                          <div className="col-span-3">User</div>
+                          <div className="col-span-2">Base</div>
+                          <div className="col-span-2">Offer</div>
+                          <div className="col-span-3">Actions</div>
+                        </div>
+
+                        <div className="divide-y divide-gray-200">
+                          {offers
+                            .filter((o) => {
+                              const q = offersQuery.trim().toLowerCase();
+                              if (!q) return true;
+                              const code = String(o.orders?.order_code ?? '').toLowerCase();
+                              const uid = String(o.user_id ?? '').toLowerCase();
+                              return code.includes(q) || uid.includes(q);
+                            })
+                            .map((o) => {
+                              const orderCode = String(o.orders?.order_code ?? '').trim() || '-';
+                              const base = Number(o.orders?.price_before_tax ?? 0);
+                              const offerAmt = Number(o.offer_amount ?? 0);
+                              const busy = offersActionLoading === o.id;
+                              return (
+                                <div key={o.id} className="grid grid-cols-12 gap-2 px-2 py-3 text-sm text-gray-800 items-start">
+                                  <div className="col-span-2">
+                                    <div className="font-semibold text-gray-900 truncate" title={orderCode}>
+                                      {orderCode}
+                                    </div>
+                                    <div className="text-xs text-gray-500 truncate" title={String(o.order_id)}>
+                                      {String(o.order_id).slice(0, 8)}…
+                                    </div>
+                                  </div>
+                                  <div className="col-span-3">
+                                    <div className="truncate" title={o.user_id}>
+                                      {o.user_id}
+                                    </div>
+                                    <div className="text-xs text-gray-500 truncate" title={String(o.created_at)}>
+                                      {new Date(o.created_at).toLocaleString()}
+                                    </div>
+                                  </div>
+                                  <div className="col-span-2">{Number.isFinite(base) && base > 0 ? `$${base.toFixed(2)}` : '-'}</div>
+                                  <div className="col-span-2 font-semibold text-gray-900">
+                                    {Number.isFinite(offerAmt) && offerAmt > 0 ? `$${offerAmt.toFixed(2)}` : '-'}
+                                  </div>
+                                  <div className="col-span-3 space-y-2">
+                                    <textarea
+                                      value={String(offerAdminNotes[o.id] ?? '')}
+                                      onChange={(e) => setOfferAdminNotes((prev) => ({ ...prev, [o.id]: e.target.value }))}
+                                      rows={2}
+                                      className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-xs"
+                                      placeholder="Admin note (optional)"
+                                    />
+                                    <div className="flex flex-col sm:flex-row gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => void resolveOffer(o, 'approved')}
+                                        disabled={busy || offersLoading}
+                                        className="inline-flex justify-center rounded-xl bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                                      >
+                                        {busy ? 'Working...' : 'Approve'}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => void resolveOffer(o, 'declined')}
+                                        disabled={busy || offersLoading}
+                                        className="inline-flex justify-center rounded-xl border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-800 hover:bg-gray-50 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                                      >
+                                        Decline
+                                      </button>
+                                    </div>
+                                    {o.notes ? <div className="text-xs text-gray-600">Customer note: {o.notes}</div> : null}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          {!offersLoading && offers.length === 0 ? (
+                            <div className="px-2 py-4 text-sm text-gray-600">No pending offers right now.</div>
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                ) : null}
+
                 {showSecurity ? (
                   <>
                     <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
@@ -1281,6 +1484,7 @@ export default function AdminPortal({ onExit }: AdminPortalProps) {
                     setShowEmployees(false);
                     setShowPricing(false);
                     setShowUsers(false);
+                    setShowOffers(false);
                     setError(null);
                     setMessage(null);
                   }}
