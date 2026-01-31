@@ -82,6 +82,19 @@ function App() {
         localStorage.setItem(STORAGE_RECEIPTS_PENDING, JSON.stringify([entry, ...list]));
         localStorage.removeItem(`${PENDING_RECEIPT_PREFIX}${order}`);
 
+        try {
+          localStorage.setItem('ed_open_receipts', '1');
+          localStorage.setItem('ed_open_receipt_id', entry.id);
+        } catch {
+          // ignore
+        }
+
+        try {
+          window.dispatchEvent(new Event('ed_open_receipts'));
+        } catch {
+          // ignore
+        }
+
         void persistToSupabase();
 
         url.searchParams.delete('checkout');

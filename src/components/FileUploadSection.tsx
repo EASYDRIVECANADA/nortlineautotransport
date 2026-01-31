@@ -1455,8 +1455,26 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
     }
 
     setShowCheckout(false);
+    setShowCostEstimate(false);
+    if (isManualFormOpen) setIsManualFormOpen(false);
+    setActiveDraftId(null);
+    setDraftDocCount(null);
+    setCostData(null);
+    setFormData(null);
+    setUploadedFiles([]);
     setSubmitMessage('Saved to drafts. You can pay later from Drafts.');
     setSubmitError(false);
+
+    try {
+      localStorage.setItem('ed_open_drafts', '1');
+    } catch {
+      // ignore
+    }
+    try {
+      window.dispatchEvent(new Event('ed_open_drafts'));
+    } catch {
+      // ignore
+    }
   };
 
   const saveDraftBeforeSignIn = useCallback(async (override?: { formData?: FormData | null; costData?: CostData | null }): Promise<string | null> => {
@@ -2940,6 +2958,45 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
       // ignore
     }
   };
+
+  useEffect(() => {
+    const reset = () => {
+      clearPersisted();
+      clearManualResumeState();
+      setIsManualFormOpen(false);
+      setManualWizardError(null);
+      setManualVinDecodeLoading(false);
+      setShowCostEstimate(false);
+      setShowCheckout(false);
+      setPickupSearch('');
+      setPickupSuggestions([]);
+      setPickupSuggestLoading(false);
+      setDropoffSearch('');
+      setDropoffSuggestions([]);
+      setDropoffSuggestLoading(false);
+      setResumeManualWizardAfterLogin(null);
+      setFormData(null);
+      setCostData(null);
+      setDraftDocCount(null);
+      setActiveDraftId(null);
+      setUploadedFiles([]);
+      setSubmitMessage(null);
+      setSubmitError(false);
+      setPaymentSuccessReceiptId(null);
+      setShowPaymentSuccess(false);
+      setDealershipCoords(null);
+      try {
+        if (fileInputRef.current) fileInputRef.current.value = '';
+      } catch {
+        // ignore
+      }
+    };
+
+    window.addEventListener('ed_reset_upload', reset);
+    return () => {
+      window.removeEventListener('ed_reset_upload', reset);
+    };
+  }, [clearManualResumeState]);
 
   useEffect(() => {
     if (!resumeManualWizardAfterLogin) return;

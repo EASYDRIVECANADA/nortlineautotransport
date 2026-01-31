@@ -45,10 +45,22 @@ export default function Dashboard({ onLogout }: DashboardProps) {
   const [showOrders, setShowOrders] = useState(false);
   const [isDraftsOpen, setIsDraftsOpen] = useState(false);
   const [showDrafts, setShowDrafts] = useState(false);
+  const [pendingUploadReset, setPendingUploadReset] = useState(false);
   const [drafts, setDrafts] = useState<CheckoutDraft[]>([]);
   const [latestQuote, setLatestQuote] = useState<QuoteReadyPayload | null>(null);
   const [saveQuoteMessage, setSaveQuoteMessage] = useState<string | null>(null);
   const [saveQuoteError, setSaveQuoteError] = useState(false);
+
+  useEffect(() => {
+    if (!pendingUploadReset) return;
+    if (showOrders || showReceiptHistory || showDrafts) return;
+    try {
+      window.dispatchEvent(new Event('ed_reset_upload'));
+    } catch {
+      // ignore
+    }
+    setPendingUploadReset(false);
+  }, [pendingUploadReset, showOrders, showReceiptHistory, showDrafts]);
 
   const loadDrafts = () => {
     try {
@@ -310,9 +322,46 @@ export default function Dashboard({ onLogout }: DashboardProps) {
       setShowOrders(false);
       setShowReceiptHistory(true);
     };
+
+    try {
+      const open = String(localStorage.getItem('ed_open_receipts') ?? '').trim();
+      if (open === '1') {
+        localStorage.removeItem('ed_open_receipts');
+        setShowOrders(false);
+        setShowReceiptHistory(true);
+        setShowDrafts(false);
+      }
+    } catch {
+      // ignore
+    }
+
     window.addEventListener('ed_open_receipts', onOpenReceipts);
     return () => {
       window.removeEventListener('ed_open_receipts', onOpenReceipts);
+    };
+  }, []);
+
+  useEffect(() => {
+    const onOpenDrafts = () => {
+      loadDrafts();
+      setShowDrafts(true);
+      setShowReceiptHistory(false);
+      setShowOrders(false);
+    };
+
+    try {
+      const open = String(localStorage.getItem('ed_open_drafts') ?? '').trim();
+      if (open === '1') {
+        localStorage.removeItem('ed_open_drafts');
+        onOpenDrafts();
+      }
+    } catch {
+      // ignore
+    }
+
+    window.addEventListener('ed_open_drafts', onOpenDrafts);
+    return () => {
+      window.removeEventListener('ed_open_drafts', onOpenDrafts);
     };
   }, []);
 
@@ -535,6 +584,7 @@ export default function Dashboard({ onLogout }: DashboardProps) {
                   setShowOrders(false);
                   setShowReceiptHistory(false);
                   setShowDrafts(false);
+                  setPendingUploadReset(true);
                 }}
                 className="flex items-center space-x-1 sm:space-x-2 px-2 sm:px-3 py-2 rounded-lg text-gray-600 hover:text-cyan-500 hover:bg-cyan-50 transition-all"
               >
