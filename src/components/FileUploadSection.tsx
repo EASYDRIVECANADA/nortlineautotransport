@@ -593,6 +593,86 @@ const minimizeCostDataForStorage = (input: CostData | null | undefined): CostDat
   };
 };
 
+const clampTextForStorage = (value: unknown, max = 4000): string => {
+  const s = String(value ?? '');
+  if (!s) return '';
+  return s.length > max ? s.slice(0, max) : s;
+};
+
+const minimizeFormDataForStorage = (input: FormData | null | undefined): FormData | null => {
+  if (!input) return null;
+  return {
+    service: {
+      service_type: input.service?.service_type,
+      vehicle_type: input.service?.vehicle_type,
+    },
+    vehicle: {
+      vin: String(input.vehicle?.vin ?? ''),
+      year: String(input.vehicle?.year ?? ''),
+      make: String(input.vehicle?.make ?? ''),
+      model: String(input.vehicle?.model ?? ''),
+      transmission: String(input.vehicle?.transmission ?? ''),
+      odometer_km: String(input.vehicle?.odometer_km ?? ''),
+      exterior_color: String(input.vehicle?.exterior_color ?? ''),
+    },
+    selling_dealership: {
+      name: clampTextForStorage(input.selling_dealership?.name, 400),
+      phone: clampTextForStorage(input.selling_dealership?.phone, 80),
+      address: clampTextForStorage(input.selling_dealership?.address, 600),
+    },
+    buying_dealership: {
+      name: clampTextForStorage(input.buying_dealership?.name, 400),
+      phone: clampTextForStorage(input.buying_dealership?.phone, 80),
+      contact_name: clampTextForStorage(input.buying_dealership?.contact_name, 200),
+    },
+    pickup_location: {
+      name: clampTextForStorage(input.pickup_location?.name, 200),
+      address: clampTextForStorage(input.pickup_location?.address, 800),
+      street: clampTextForStorage(input.pickup_location?.street, 300),
+      number: clampTextForStorage(input.pickup_location?.number, 60),
+      unit: clampTextForStorage(input.pickup_location?.unit, 60),
+      area: clampTextForStorage(input.pickup_location?.area, 120),
+      city: clampTextForStorage(input.pickup_location?.city, 160),
+      province: clampTextForStorage(input.pickup_location?.province, 40),
+      postal_code: clampTextForStorage(input.pickup_location?.postal_code, 40),
+      country: clampTextForStorage(input.pickup_location?.country, 60) || 'Canada',
+      phone: clampTextForStorage(input.pickup_location?.phone, 80),
+    },
+    dropoff_location: {
+      name: clampTextForStorage(input.dropoff_location?.name, 200),
+      phone: clampTextForStorage(input.dropoff_location?.phone, 80),
+      address: clampTextForStorage(input.dropoff_location?.address, 800),
+      street: clampTextForStorage(input.dropoff_location?.street, 300),
+      number: clampTextForStorage(input.dropoff_location?.number, 60),
+      unit: clampTextForStorage(input.dropoff_location?.unit, 60),
+      area: clampTextForStorage(input.dropoff_location?.area, 120),
+      city: clampTextForStorage(input.dropoff_location?.city, 160),
+      province: clampTextForStorage(input.dropoff_location?.province, 40),
+      postal_code: clampTextForStorage(input.dropoff_location?.postal_code, 40),
+      country: clampTextForStorage(input.dropoff_location?.country, 60) || 'Canada',
+      lat: clampTextForStorage(input.dropoff_location?.lat, 40),
+      lng: clampTextForStorage(input.dropoff_location?.lng, 40),
+    },
+    transaction: {
+      transaction_id: clampTextForStorage(input.transaction?.transaction_id, 120),
+      release_form_number: clampTextForStorage(input.transaction?.release_form_number, 120),
+      release_date: clampTextForStorage(input.transaction?.release_date, 40),
+      arrival_date: clampTextForStorage(input.transaction?.arrival_date, 40),
+    },
+    authorization: {
+      released_by_name: clampTextForStorage(input.authorization?.released_by_name, 200),
+      released_to_name: clampTextForStorage(input.authorization?.released_to_name, 200),
+    },
+    dealer_notes: clampTextForStorage(input.dealer_notes, 2000),
+    costEstimate: input.costEstimate ? minimizeCostDataForStorage(input.costEstimate) : undefined,
+    draft_source: String(input.draft_source ?? '').trim() || undefined,
+    pickup_locked: Boolean(input.pickup_locked),
+    transaction_id: clampTextForStorage((input as unknown as Record<string, unknown>)?.transaction_id, 120) || undefined,
+    release_form_number: clampTextForStorage((input as unknown as Record<string, unknown>)?.release_form_number, 120) || undefined,
+    arrival_date: clampTextForStorage((input as unknown as Record<string, unknown>)?.arrival_date, 40) || undefined,
+  };
+};
+
 const emitQuoteReady = (payload: { formData: unknown; costData: unknown; docCount: number; source: 'manual' | 'bulk_upload' }) => {
   try {
     window.dispatchEvent(new CustomEvent('ed_quote_ready', { detail: payload }));
@@ -1190,6 +1270,11 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [userKey, setUserKey] = useState<string | null>(null);
 
+  const getDraftStorageKey = (base: string) => {
+    const safeUser = String(userKey ?? '').trim() || 'anon';
+    return `${base}__${safeUser}`;
+  };
+
   useEffect(() => {
     const isLocalDev = import.meta.env.DEV && window.location.hostname === 'localhost';
 
@@ -1410,11 +1495,12 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
     const inferredDraftSource: CheckoutDraft['draftSource'] =
       String(formData?.draft_source ?? '').trim() === 'bulk_upload' || uploadedFiles.length > 0 ? 'bulk_upload' : 'manual';
     const persistedCost = minimizeCostDataForStorage(costData);
+    const persistedForm = minimizeFormDataForStorage(formData) ?? formData;
     const draft: CheckoutDraft = {
       id: draftId,
       createdAt: now,
       formData: {
-        ...formData,
+        ...persistedForm,
         draft_source:
           String(formData?.draft_source ?? '').trim() || (inferredDraftSource === 'bulk_upload' ? 'bulk_upload' : 'manual'),
       },
@@ -1424,7 +1510,7 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
       uploadedFilesMeta: uploadedFiles.map((f) => ({ key: makeDraftFileKey(f.file), name: f.name, docType: f.docType })),
     };
     try {
-      const raw = localStorage.getItem(STORAGE_DRAFTS_PRIMARY) ?? localStorage.getItem(STORAGE_DRAFTS);
+      const raw = localStorage.getItem(getDraftStorageKey(STORAGE_DRAFTS_PRIMARY)) ?? localStorage.getItem(getDraftStorageKey(STORAGE_DRAFTS));
       const parsed = raw ? (JSON.parse(raw) as unknown) : null;
       const existing = Array.isArray(parsed) ? (parsed as CheckoutDraft[]) : [];
 
@@ -1440,8 +1526,14 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
         return [draft, ...existing];
       })();
 
-      localStorage.setItem(STORAGE_DRAFTS_PRIMARY, JSON.stringify(next));
-      localStorage.setItem(STORAGE_DRAFTS, JSON.stringify(next));
+      try {
+        localStorage.setItem(getDraftStorageKey(STORAGE_DRAFTS_PRIMARY), JSON.stringify(next));
+        localStorage.setItem(getDraftStorageKey(STORAGE_DRAFTS), JSON.stringify(next));
+      } catch {
+        const trimmed = next.slice(0, 6);
+        localStorage.setItem(getDraftStorageKey(STORAGE_DRAFTS_PRIMARY), JSON.stringify(trimmed));
+        localStorage.setItem(getDraftStorageKey(STORAGE_DRAFTS), JSON.stringify(trimmed));
+      }
     } catch {
       setSubmitMessage('Failed to save draft. Please check browser storage settings and try again.');
       setSubmitError(true);
@@ -1552,16 +1644,16 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
     }
 
     try {
-      const raw = localStorage.getItem(STORAGE_DRAFTS);
+      const raw = localStorage.getItem(getDraftStorageKey(STORAGE_DRAFTS));
       const parsed = raw ? (JSON.parse(raw) as unknown) : null;
       const existing = Array.isArray(parsed) ? (parsed as CheckoutDraft[]) : [];
       const idx = existing.findIndex((d) => d && typeof d === 'object' && (d as CheckoutDraft).id === draftId);
       if (idx >= 0) {
         const next = [...existing];
         next[idx] = draft;
-        localStorage.setItem(STORAGE_DRAFTS, JSON.stringify(next));
+        localStorage.setItem(getDraftStorageKey(STORAGE_DRAFTS), JSON.stringify(next));
       } else {
-        localStorage.setItem(STORAGE_DRAFTS, JSON.stringify([draft, ...existing]));
+        localStorage.setItem(getDraftStorageKey(STORAGE_DRAFTS), JSON.stringify([draft, ...existing]));
       }
     } catch {
       // ignore
@@ -2068,7 +2160,7 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
     if (!persistState) return;
     try {
       if (formData) {
-        localStorage.setItem(STORAGE_FORM, JSON.stringify(formData));
+        localStorage.setItem(STORAGE_FORM, JSON.stringify(minimizeFormDataForStorage(formData)));
       } else {
         localStorage.removeItem(STORAGE_FORM);
       }
@@ -2079,11 +2171,11 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
         localStorage.setItem(STORAGE_MESSAGE, submitMessage);
       }
 
-      localStorage.setItem(STORAGE_ERROR, submitError ? 'true' : 'false');
+      localStorage.setItem(`${userKey}_${STORAGE_ERROR}`, submitError ? 'true' : 'false');
     } catch {
       // ignore
     }
-  }, [formData, submitMessage, submitError, persistState]);
+  }, [formData, persistState, submitError, submitMessage, userKey]);
 
   const fileToBase64 = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -3969,11 +4061,11 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
         }
 
         try {
-          const raw = localStorage.getItem(STORAGE_DRAFTS);
+          const raw = localStorage.getItem(getDraftStorageKey(STORAGE_DRAFTS));
           const parsed = raw ? (JSON.parse(raw) as unknown) : null;
           const existing = Array.isArray(parsed) ? (parsed as CheckoutDraft[]) : [];
           if (newDrafts.length) {
-            localStorage.setItem(STORAGE_DRAFTS, JSON.stringify([...newDrafts, ...existing]));
+            localStorage.setItem(getDraftStorageKey(STORAGE_DRAFTS), JSON.stringify([...newDrafts, ...existing]));
           }
         } catch {
           // ignore
@@ -4118,11 +4210,11 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
       }
 
       try {
-        const raw = localStorage.getItem(STORAGE_DRAFTS);
+        const raw = localStorage.getItem(getDraftStorageKey(STORAGE_DRAFTS));
         const parsed = raw ? (JSON.parse(raw) as unknown) : null;
         const existing = Array.isArray(parsed) ? (parsed as CheckoutDraft[]) : [];
         if (newDrafts.length) {
-          localStorage.setItem(STORAGE_DRAFTS, JSON.stringify([...newDrafts, ...existing]));
+          localStorage.setItem(getDraftStorageKey(STORAGE_DRAFTS), JSON.stringify([...newDrafts, ...existing]));
         }
       } catch {
         // ignore

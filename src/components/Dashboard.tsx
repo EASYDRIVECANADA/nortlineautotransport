@@ -50,6 +50,13 @@ export default function Dashboard({ onLogout }: DashboardProps) {
   const [latestQuote, setLatestQuote] = useState<QuoteReadyPayload | null>(null);
   const [saveQuoteMessage, setSaveQuoteMessage] = useState<string | null>(null);
   const [saveQuoteError, setSaveQuoteError] = useState(false);
+  const [draftUserKey, setDraftUserKey] = useState<string>('anon');
+
+  const getDraftStorageKey = (suffix?: 'v1') => {
+    const base = suffix === 'v1' ? DRAFTS_STORAGE_KEY_V1 : DRAFTS_STORAGE_KEY;
+    const safeUser = String(draftUserKey ?? '').trim() || 'anon';
+    return `${base}__${safeUser}`;
+  };
 
   useEffect(() => {
     if (!pendingUploadReset) return;
@@ -64,7 +71,7 @@ export default function Dashboard({ onLogout }: DashboardProps) {
 
   const loadDrafts = () => {
     try {
-      const raw = localStorage.getItem(DRAFTS_STORAGE_KEY);
+      const raw = localStorage.getItem(getDraftStorageKey());
       const parsed = raw ? (JSON.parse(raw) as unknown) : null;
       const primary = Array.isArray(parsed) ? (parsed as CheckoutDraft[]) : [];
       if (primary.length) {
@@ -72,14 +79,14 @@ export default function Dashboard({ onLogout }: DashboardProps) {
         return;
       }
 
-      const rawV1 = localStorage.getItem(DRAFTS_STORAGE_KEY_V1);
+      const rawV1 = localStorage.getItem(getDraftStorageKey('v1'));
       const parsedV1 = rawV1 ? (JSON.parse(rawV1) as unknown) : null;
       const legacy = Array.isArray(parsedV1) ? (parsedV1 as CheckoutDraft[]) : [];
       setDrafts(legacy);
 
       if (legacy.length) {
         try {
-          localStorage.setItem(DRAFTS_STORAGE_KEY, JSON.stringify(legacy));
+          localStorage.setItem(getDraftStorageKey(), JSON.stringify(legacy));
         } catch {
           // ignore
         }
@@ -108,8 +115,8 @@ export default function Dashboard({ onLogout }: DashboardProps) {
     const next = drafts.filter((d) => d.id !== id);
     setDrafts(next);
     try {
-      localStorage.setItem(DRAFTS_STORAGE_KEY, JSON.stringify(next));
-      localStorage.setItem(DRAFTS_STORAGE_KEY_V1, JSON.stringify(next));
+      localStorage.setItem(getDraftStorageKey(), JSON.stringify(next));
+      localStorage.setItem(getDraftStorageKey('v1'), JSON.stringify(next));
     } catch {
       // ignore
     }
@@ -146,12 +153,17 @@ export default function Dashboard({ onLogout }: DashboardProps) {
   };
 
   useEffect(() => {
-    if (!supabase) return;
+    if (!supabase) {
+      setDraftUserKey('anon');
+      return;
+    }
     let active = true;
     supabase.auth
       .getUser()
       .then(({ data }) => {
         if (!active) return;
+        const userId = String(data?.user?.id ?? '').trim();
+        setDraftUserKey(userId || 'anon');
         const email = String(data?.user?.email ?? '').trim();
         const meta = (data?.user?.user_metadata ?? null) as unknown;
         const metaObj = meta && typeof meta === 'object' ? (meta as Record<string, unknown>) : null;
@@ -163,6 +175,7 @@ export default function Dashboard({ onLogout }: DashboardProps) {
       })
       .catch(() => {
         if (!active) return;
+        setDraftUserKey('anon');
         setAccountLabel('Account');
         setAccountName('');
         setAccountAvatarUrl(null);
@@ -306,7 +319,7 @@ export default function Dashboard({ onLogout }: DashboardProps) {
   useEffect(() => {
     loadDrafts();
     const onStorage = (e: StorageEvent) => {
-      if (e.key === DRAFTS_STORAGE_KEY || e.key === DRAFTS_STORAGE_KEY_V1) loadDrafts();
+      if (e.key === getDraftStorageKey() || e.key === getDraftStorageKey('v1')) loadDrafts();
     };
     const onDraftsUpdated = () => loadDrafts();
     window.addEventListener('storage', onStorage);
@@ -315,7 +328,7 @@ export default function Dashboard({ onLogout }: DashboardProps) {
       window.removeEventListener('storage', onStorage);
       window.removeEventListener('ed_drafts_updated', onDraftsUpdated);
     };
-  }, []);
+  }, [draftUserKey]);
 
   useEffect(() => {
     const onOpenReceipts = () => {
