@@ -273,9 +273,9 @@ export default function ReceiptHistory({ onBack, embed = false }: ReceiptHistory
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-cyan-50/30 to-gray-50">
+    <div className={embed ? 'bg-gray-50' : 'min-h-screen bg-gray-50'}>
       {embed ? null : (
-        <nav className="bg-white/80 backdrop-blur-md shadow-lg border-b border-gray-200/50 sticky top-0 z-50">
+        <nav className="bg-white shadow-sm border-b border-gray-200 sticky top-0 z-50">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="flex flex-wrap justify-between items-center gap-3 py-3">
               <div className="flex items-center space-x-3">
@@ -287,7 +287,7 @@ export default function ReceiptHistory({ onBack, embed = false }: ReceiptHistory
               </div>
               <button
                 onClick={onBack}
-                className="flex items-center space-x-2 px-4 py-2 rounded-xl text-gray-700 hover:text-cyan-600 hover:bg-cyan-50 transition-all duration-200 font-medium"
+                className="flex items-center space-x-2 px-4 py-2 rounded-xl text-gray-700 hover:text-cyan-600 hover:bg-cyan-50 transition-colors font-semibold"
               >
                 <ArrowLeft className="w-5 h-5" />
                 <span className="hidden sm:inline">Back to Dashboard</span>
@@ -307,16 +307,16 @@ export default function ReceiptHistory({ onBack, embed = false }: ReceiptHistory
           }}
         >
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
-          <div className="relative w-full max-w-sm overflow-hidden rounded-2xl border border-white/10 bg-gray-900/95 text-white shadow-2xl">
-            <div className="px-6 py-5">
-              <div className="text-sm font-semibold text-white">Delete this receipt?</div>
-              <div className="mt-1 text-xs text-white/70">This action cannot be undone.</div>
+          <div className="relative w-full max-w-sm overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl">
+            <div className="px-6 py-5 border-b border-gray-100">
+              <div className="text-sm font-semibold text-gray-900">Delete this receipt?</div>
+              <div className="mt-1 text-xs text-gray-600">This action cannot be undone.</div>
             </div>
-            <div className="flex items-center justify-end gap-3 px-6 pb-6">
+            <div className="flex items-center justify-end gap-3 px-6 py-5">
               <button
                 type="button"
                 onClick={() => setDeleteTargetId(null)}
-                className="inline-flex items-center justify-center rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-xs font-semibold text-white hover:bg-white/10 transition-colors"
+                className="inline-flex items-center justify-center rounded-xl border border-gray-300 bg-white px-4 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
               >
                 Cancel
               </button>
@@ -326,7 +326,7 @@ export default function ReceiptHistory({ onBack, embed = false }: ReceiptHistory
                   void deleteReceiptConfirmed(deleteTargetId);
                   setDeleteTargetId(null);
                 }}
-                className="inline-flex items-center justify-center rounded-xl bg-red-500 px-4 py-2 text-xs font-semibold text-white hover:bg-red-400 transition-colors"
+                className="inline-flex items-center justify-center rounded-xl bg-red-600 px-4 py-2 text-xs font-semibold text-white hover:bg-red-700 transition-colors"
               >
                 Delete
               </button>
@@ -349,30 +349,25 @@ export default function ReceiptHistory({ onBack, embed = false }: ReceiptHistory
         >
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
 
-          <div className="relative w-full max-w-3xl overflow-hidden rounded-3xl border border-white/10 bg-white shadow-[0_30px_80px_-30px_rgba(0,0,0,0.6)]">
-            <div className="flex items-center justify-between gap-4 bg-gradient-to-r from-cyan-500 via-sky-500 to-blue-600 px-6 py-5">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-white/15 ring-1 ring-white/20">
-                  <FileText className="h-5 w-5 text-white" />
-                </div>
-                <div>
-                  <div className="text-lg font-bold text-white">Receipt Details</div>
-                  <div className="mt-0.5 flex items-center gap-2 text-xs font-medium text-white/85">
-                    <div className="flex h-5 w-5 items-center justify-center rounded-full bg-white/15">
-                      <CheckCircle className="h-3 w-3 text-white" />
-                    </div>
-                    Created: {new Date(selectedReceipt.createdAt).toLocaleString()}
+          <div className="relative w-full max-w-3xl overflow-hidden rounded-3xl border border-gray-200 bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-4 px-6 py-5 border-b border-gray-100">
+              <div className="min-w-0">
+                <div className="text-lg font-bold text-gray-900">Receipt details</div>
+                <div className="mt-1 flex items-center gap-2 text-xs font-medium text-gray-600">
+                  <div className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-50 ring-1 ring-emerald-100">
+                    <CheckCircle className="h-3 w-3 text-emerald-700" />
                   </div>
+                  Created: {new Date(selectedReceipt.createdAt).toLocaleString()}
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 shrink-0">
                 <button
                   type="button"
                   onClick={() => setDeleteTargetId(selectedReceipt.id)}
                   title="Delete receipt"
                   aria-label="Delete receipt"
-                  className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-white/15 ring-1 ring-white/20 text-white hover:bg-white/20 transition-colors"
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-gray-200 bg-white text-gray-700 hover:bg-red-50 hover:text-red-700 hover:border-red-200 transition-colors"
                 >
                   <Trash2 className="h-5 w-5" />
                 </button>
@@ -389,9 +384,9 @@ export default function ReceiptHistory({ onBack, embed = false }: ReceiptHistory
                   }}
                   title={receiptCopied ? 'Copied' : 'Copy receipt'}
                   aria-label={receiptCopied ? 'Copied' : 'Copy receipt'}
-                  className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-white/15 ring-1 ring-white/20 text-white hover:bg-white/20 transition-colors"
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 transition-colors"
                 >
-                  {receiptCopied ? <CheckCircle className="h-5 w-5" /> : <Clipboard className="h-5 w-5" />}
+                  {receiptCopied ? <CheckCircle className="h-5 w-5 text-emerald-700" /> : <Clipboard className="h-5 w-5" />}
                 </button>
                 <button
                   type="button"
@@ -399,7 +394,7 @@ export default function ReceiptHistory({ onBack, embed = false }: ReceiptHistory
                     setSelectedReceiptId(null);
                     setReceiptCopied(false);
                   }}
-                  className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-white/15 ring-1 ring-white/20 text-white hover:bg-white/20 transition-colors"
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 transition-colors"
                   aria-label="Close"
                   title="Close"
                 >
@@ -409,7 +404,7 @@ export default function ReceiptHistory({ onBack, embed = false }: ReceiptHistory
             </div>
 
             <div className="p-6 sm:p-7">
-              <pre className="whitespace-pre-wrap text-sm leading-7 text-gray-800 max-h-[70vh] overflow-auto rounded-2xl border-2 border-gray-200 bg-gradient-to-br from-gray-50 to-white p-5 sm:p-7 shadow-inner font-mono">
+              <pre className="whitespace-pre-wrap text-sm leading-7 text-gray-800 max-h-[70vh] overflow-auto rounded-2xl border border-gray-200 bg-gray-50 p-5 sm:p-7 shadow-inner font-mono">
                 {selectedReceipt.text}
               </pre>
             </div>
@@ -418,57 +413,55 @@ export default function ReceiptHistory({ onBack, embed = false }: ReceiptHistory
       )}
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-10">
-        <div className="mb-6 sm:mb-10">
-          <div className="flex items-center gap-4">
-            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-500 to-cyan-600 shadow-xl shadow-cyan-500/30">
-              <FileText className="h-7 w-7 text-white" />
-            </div>
-            <div>
-              <h1 className="text-3xl sm:text-4xl font-bold bg-gradient-to-r from-gray-900 via-gray-800 to-gray-700 bg-clip-text text-transparent">Receipt History</h1>
-              <p className="mt-1 text-sm sm:text-base text-gray-600">View and manage your submission receipts</p>
-            </div>
-          </div>
+        <div className="mb-6 sm:mb-8">
+          <div className="text-lg sm:text-xl font-bold text-gray-900">Receipts</div>
+          <div className="mt-1 text-xs sm:text-sm text-gray-600">Your submission receipts. Click any receipt to view details.</div>
         </div>
 
-        <div className="grid grid-cols-1 gap-6 sm:gap-8">
-          <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-200/50 overflow-hidden transition-all duration-300 hover:shadow-2xl">
-            <div className="p-5 sm:p-6 bg-gradient-to-r from-cyan-50 to-cyan-100/50 border-b border-cyan-200/50">
+        <div className="grid grid-cols-1 gap-6">
+          <div className="rounded-2xl bg-white border border-gray-200 shadow-sm overflow-hidden">
+            <div className="p-5 sm:p-6 border-b border-gray-100">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                <div className="text-lg font-bold text-gray-900">All Receipts</div>
+                <div>
+                  <div className="text-sm font-semibold text-gray-900">All receipts</div>
+                  <div className="mt-1 text-xs text-gray-600">{userEmail ? `Signed in as ${userEmail}` : 'Not signed in'}</div>
+                </div>
                 <div className="flex items-center gap-3">
                   {userEmail && supabase && localReceiptsCount > 0 ? (
                     <button
                       type="button"
                       onClick={() => void syncLocalReceipts()}
                       disabled={syncing}
-                      className="inline-flex items-center rounded-lg bg-cyan-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-cyan-500 disabled:opacity-60"
+                      className="inline-flex items-center rounded-xl bg-gray-900 px-4 py-2 text-xs font-semibold text-white hover:bg-gray-800 disabled:opacity-60 transition-colors"
                       title="Upload local receipts to your account"
                     >
                       {syncing ? 'Syncing…' : `Sync ${localReceiptsCount} local`}
                     </button>
                   ) : null}
-                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-cyan-500 text-xs font-bold text-white shadow-lg shadow-cyan-500/30">{receipts.length}</div>
+                  <span className="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-800 ring-1 ring-gray-200">
+                    {receipts.length}
+                  </span>
                 </div>
               </div>
             </div>
 
             <div className="p-5 sm:p-6">
               {isLoading ? (
-                <div className="rounded-2xl bg-gradient-to-br from-gray-50 to-gray-100 border border-gray-200 p-6 text-center">
+                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-6 text-center">
                   <div className="text-sm font-medium text-gray-700">Loading receipts…</div>
                 </div>
               ) : loadError ? (
-                <div className="rounded-2xl bg-gradient-to-br from-gray-50 to-gray-100 border border-gray-200 p-6 text-center">
+                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-6 text-center">
                   <p className="text-sm font-medium text-gray-700">{loadError}</p>
                 </div>
               ) : receipts.length === 0 ? (
-                <div className="rounded-2xl bg-gradient-to-br from-gray-50 to-gray-100 border border-gray-200 p-6 text-center">
+                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-6 text-center">
                   <FileText className="mx-auto h-10 w-10 text-gray-400 mb-3" />
                   <p className="text-sm font-medium text-gray-700">No receipts yet</p>
                   <p className="mt-1 text-xs text-gray-500">Submit a document to generate your first receipt</p>
                 </div>
               ) : (
-                <div className="max-h-[calc(100vh-20rem)] overflow-auto rounded-xl space-y-2">
+                <div className="max-h-[calc(100vh-20rem)] overflow-auto rounded-xl space-y-2 pr-1">
                   {receipts.map((r, idx) => (
                     <div
                       key={r.id}
@@ -485,17 +478,19 @@ export default function ReceiptHistory({ onBack, embed = false }: ReceiptHistory
                           setReceiptCopied(false);
                         }
                       }}
-                      className={`w-full text-left px-4 py-4 rounded-xl border transition-all duration-200 ${
+                      className={`w-full text-left px-4 py-4 rounded-xl border transition-colors ${
                         selectedReceiptId === r.id
-                          ? 'bg-gradient-to-r from-cyan-50 to-cyan-100/50 border-cyan-300 shadow-lg shadow-cyan-500/10 scale-[1.02]'
-                          : 'bg-white border-gray-200 hover:bg-gray-50 hover:border-gray-300 hover:shadow-md'
+                          ? 'bg-cyan-50 border-cyan-300 shadow-sm'
+                          : 'bg-white border-gray-200 hover:bg-gray-50 hover:border-gray-300'
                       }`}
                     >
                       <div className="flex items-center justify-between gap-3 mb-2">
                         <div className="flex items-center gap-2">
-                          <div className={`flex h-6 w-6 items-center justify-center rounded-lg text-xs font-bold ${
-                            selectedReceiptId === r.id ? 'bg-cyan-500 text-white' : 'bg-gray-200 text-gray-600'
-                          }`}>
+                          <div
+                            className={`flex h-6 w-6 items-center justify-center rounded-lg text-xs font-bold ${
+                              selectedReceiptId === r.id ? 'bg-cyan-600 text-white' : 'bg-gray-200 text-gray-600'
+                            }`}
+                          >
                             {idx + 1}
                           </div>
                           <div className="text-sm font-bold text-gray-900">Receipt</div>
@@ -520,7 +515,7 @@ export default function ReceiptHistory({ onBack, embed = false }: ReceiptHistory
                         </div>
                       </div>
                       <div className="flex items-baseline justify-between gap-3">
-                        <div className="text-lg font-extrabold text-cyan-700">
+                        <div className="text-lg font-extrabold text-gray-900">
                           {extractReceiptPrice(r.text) ?? '-'}
                         </div>
                         <div className="text-[11px] font-medium text-gray-500">Tap to view</div>

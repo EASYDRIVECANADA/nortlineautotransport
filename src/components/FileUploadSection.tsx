@@ -155,8 +155,6 @@ const emptyAddressBreakdown = (): AddressBreakdown => ({
 
 const defaultAddressBreakdown = (): AddressBreakdown => ({
   ...emptyAddressBreakdown(),
-  city: 'Ottawa',
-  province: 'ON',
   country: 'Canada',
 });
 
@@ -627,6 +625,8 @@ const minimizeFormDataForStorage = (input: FormData | null | undefined): FormDat
     },
     pickup_location: {
       name: clampTextForStorage(input.pickup_location?.name, 200),
+      contact_name: clampTextForStorage((input.pickup_location as unknown as Record<string, unknown>)?.contact_name, 200),
+      email: clampTextForStorage((input.pickup_location as unknown as Record<string, unknown>)?.email, 320),
       address: clampTextForStorage(input.pickup_location?.address, 800),
       street: clampTextForStorage(input.pickup_location?.street, 300),
       number: clampTextForStorage(input.pickup_location?.number, 60),
@@ -640,6 +640,8 @@ const minimizeFormDataForStorage = (input: FormData | null | undefined): FormDat
     },
     dropoff_location: {
       name: clampTextForStorage(input.dropoff_location?.name, 200),
+      contact_name: clampTextForStorage((input.dropoff_location as unknown as Record<string, unknown>)?.contact_name, 200),
+      email: clampTextForStorage((input.dropoff_location as unknown as Record<string, unknown>)?.email, 320),
       phone: clampTextForStorage(input.dropoff_location?.phone, 80),
       address: clampTextForStorage(input.dropoff_location?.address, 800),
       street: clampTextForStorage(input.dropoff_location?.street, 300),
@@ -665,6 +667,8 @@ const minimizeFormDataForStorage = (input: FormData | null | undefined): FormDat
     },
     dealer_notes: clampTextForStorage(input.dealer_notes, 2000),
     costEstimate: input.costEstimate ? minimizeCostDataForStorage(input.costEstimate) : undefined,
+    vehicle_condition:
+      (input as unknown as Record<string, unknown>)?.vehicle_condition === 'does_not_run_or_drive' ? 'does_not_run_or_drive' : 'runs_and_drives',
     draft_source: String(input.draft_source ?? '').trim() || undefined,
     pickup_locked: Boolean(input.pickup_locked),
     transaction_id: clampTextForStorage((input as unknown as Record<string, unknown>)?.transaction_id, 120) || undefined,
@@ -707,6 +711,8 @@ type FormData = {
   };
   pickup_location: {
     name: string;
+    contact_name: string;
+    email: string;
     address: string;
     street: string;
     number: string;
@@ -720,6 +726,8 @@ type FormData = {
   };
   dropoff_location: {
     name: string;
+    contact_name: string;
+    email: string;
     phone: string;
     address: string;
     street: string;
@@ -745,6 +753,7 @@ type FormData = {
   };
   dealer_notes: string;
   costEstimate?: CostData | null;
+  vehicle_condition?: 'runs_and_drives' | 'does_not_run_or_drive';
   draft_source?: string;
   pickup_locked?: boolean;
   transaction_id?: string;
@@ -752,7 +761,7 @@ type FormData = {
   arrival_date?: string;
 };
 
-type ManualWizardStep = 'pickup' | 'dropoff' | 'login' | 'quote' | 'vehicle' | 'confirm';
+type ManualWizardStep = 'locations' | 'vehicle' | 'quote';
 
 type AddressSuggestion = {
   text: string;
@@ -1341,7 +1350,7 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
   const [dragActive, setDragActive] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isManualFormOpen, setIsManualFormOpen] = useState(false);
-  const [manualWizardStep, setManualWizardStep] = useState<ManualWizardStep>('pickup');
+  const [manualWizardStep, setManualWizardStep] = useState<ManualWizardStep>('locations');
   const [manualWizardError, setManualWizardError] = useState<string | null>(null);
   const [manualVinDecodeLoading, setManualVinDecodeLoading] = useState(false);
 
@@ -1407,6 +1416,17 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
       return null;
     }
   });
+
+  useEffect(() => {
+    const persisted = (formData as unknown as Record<string, unknown> | null)?.vehicle_condition;
+    if (persisted === 'does_not_run_or_drive') {
+      setVehicleCondition('does_not_run_or_drive');
+      return;
+    }
+    if (persisted === 'runs_and_drives') {
+      setVehicleCondition('runs_and_drives');
+    }
+  }, [formData]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const suppressGeocodeRef = useRef(false);
   const autoExtractTriggeredRef = useRef(false);
@@ -1489,7 +1509,7 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
   };
 
   const saveCurrentAsDraft = () => {
-    if (!formData || !costData) return;
+    if (!formData) return;
     const now = new Date().toISOString();
     const draftId = activeDraftId ?? `${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const inferredDraftSource: CheckoutDraft['draftSource'] =
@@ -1554,7 +1574,7 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
     setCostData(null);
     setFormData(null);
     setUploadedFiles([]);
-    setSubmitMessage('Saved to drafts. You can pay later from Drafts.');
+    setSubmitMessage(persistedCost ? 'Saved to drafts. You can pay later from Drafts.' : 'Saved to drafts. Continue later from Drafts.');
     setSubmitError(false);
 
     try {
@@ -1601,6 +1621,8 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
           address: '',
           ...emptyAddressBreakdown(),
           phone: '',
+          contact_name: '',
+          email: '',
         },
         dropoff_location: {
           name: '',
@@ -1609,10 +1631,13 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
           ...emptyAddressBreakdown(),
           lat: '',
           lng: '',
+          contact_name: '',
+          email: '',
         },
         transaction: { transaction_id: '', release_form_number: '', release_date: '', arrival_date: '' },
         authorization: { released_by_name: '', released_to_name: '' },
         dealer_notes: '',
+        vehicle_condition: 'runs_and_drives',
       } satisfies FormData);
 
     const draft: CheckoutDraft = {
@@ -1766,13 +1791,7 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
 
           const hasPickup = Boolean(String(restoredFormData?.pickup_location?.address ?? '').trim());
           const hasDropoff = Boolean(String(restoredFormData?.dropoff_location?.address ?? '').trim());
-          const nextStep: ManualWizardStep = hasCost
-            ? 'quote'
-            : hasPickup && hasDropoff
-              ? 'login'
-              : hasPickup
-                ? 'dropoff'
-                : 'pickup';
+          const nextStep: ManualWizardStep = hasCost ? 'quote' : hasPickup || hasDropoff ? 'vehicle' : 'locations';
 
           setManualWizardStep(nextStep);
           setIsManualFormOpen(true);
@@ -1841,6 +1860,18 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
     };
   }, []);
 
+  const isOntarioOrQuebec = (regionRaw: unknown): boolean => {
+    const region = String(regionRaw ?? '').trim().toLowerCase();
+    if (!region) return false;
+    return region === 'on' || region === 'qc' || region === 'ontario' || region === 'quebec';
+  };
+
+  const looksLikeOntarioOrQuebecSuggestion = (textRaw: unknown): boolean => {
+    const text = String(textRaw ?? '').trim();
+    if (!text) return false;
+    return /,\s*(ON|QC)(?:\s|$)/.test(text) || /\b(ontario|quebec)\b/i.test(text);
+  };
+
   const geocodeAddress = async (address: string): Promise<{ lat: number; lng: number } | null> => {
     const q = address.trim();
     if (!q) return null;
@@ -1848,13 +1879,14 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
     const parts = q.split(',').map((p) => p.trim()).filter(Boolean);
     const idxWithNumber = parts.findIndex((p) => /\d/.test(p));
     const normalizedQuery = idxWithNumber > 0 ? parts.slice(idxWithNumber).join(', ') : q;
-    const url = `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=pjson&maxLocations=1&outFields=*&sourceCountry=CAN&singleLine=${encodeURIComponent(normalizedQuery)}`;
+    const url = `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=pjson&maxLocations=1&outFields=Region,Country,CountryCode&sourceCountry=CAN&singleLine=${encodeURIComponent(normalizedQuery)}`;
     const res = await fetch(url);
     if (!res.ok) return null;
     const data = (await res.json()) as {
-      candidates?: Array<{ location?: { x?: number; y?: number } }>;
+      candidates?: Array<{ location?: { x?: number; y?: number }; attributes?: { Region?: unknown; CountryCode?: unknown; Country?: unknown } }>;
     };
     const candidate = data?.candidates?.[0];
+    if (!isOntarioOrQuebec(candidate?.attributes?.Region)) return null;
     const lat = Number(candidate?.location?.y);
     const lng = Number(candidate?.location?.x);
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
@@ -1948,7 +1980,8 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
     const url = `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/reverseGeocode?f=pjson&location=${encodeURIComponent(String(lng))}%2C${encodeURIComponent(String(lat))}`;
     const res = await fetch(url);
     if (!res.ok) return null;
-    const data = (await res.json()) as { address?: { Match_addr?: string; LongLabel?: string } };
+    const data = (await res.json()) as { address?: { Match_addr?: string; LongLabel?: string; Region?: unknown } };
+    if (!isOntarioOrQuebec(data?.address?.Region)) return null;
     return data?.address?.LongLabel ?? data?.address?.Match_addr ?? null;
   };
 
@@ -1990,7 +2023,10 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
         
         // Try MapBox routing as backup
         try {
-          const mapboxUrl = `https://api.mapbox.com/directions/v5/mapbox/driving/${pickupLng},${pickupLat};${dropoffLng},${dropoffLat}?access_token=pk.eyJ1IjoibWFwYm94IiwiYSI6ImNpejY4NXVycTA2emYycXBndHRqcmZ3N3gifQ.rJcFIG214AriISLbB6B5aw&geometries=geojson`;
+          const mapboxToken = String((import.meta as any)?.env?.VITE_MAPBOX_ACCESS_TOKEN ?? '').trim();
+          if (!mapboxToken) throw new Error('Missing VITE_MAPBOX_ACCESS_TOKEN');
+
+          const mapboxUrl = `https://api.mapbox.com/directions/v5/mapbox/driving/${pickupLng},${pickupLat};${dropoffLng},${dropoffLat}?access_token=${encodeURIComponent(mapboxToken)}&geometries=geojson`;
           const mapboxResponse = await fetch(mapboxUrl);
           
           if (mapboxResponse.ok) {
@@ -2871,6 +2907,8 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
         postal_code: pickupPostalFinal,
         country: pickupCountryFinal || 'Canada',
         phone: String(pickupPhone ?? ''),
+        contact_name: '',
+        email: '',
       },
       dropoff_location: {
         name: dropoffName,
@@ -2886,6 +2924,8 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
         country: dropoffCountryFinal || 'Canada',
         lat: dropoffLat,
         lng: dropoffLng,
+        contact_name: '',
+        email: '',
       },
       transaction: {
         transaction_id: String(transactionId ?? ''),
@@ -2928,12 +2968,16 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
       },
       pickup_location: {
         name: '',
+        contact_name: '',
+        email: '',
         address: '',
         phone: '',
         ...defaultAddressBreakdown(),
       },
       dropoff_location: {
         name: '',
+        contact_name: '',
+        email: '',
         phone: '',
         address: '',
         lat: '',
@@ -2951,6 +2995,7 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
         released_to_name: '',
       },
       dealer_notes: '',
+      vehicle_condition: 'runs_and_drives',
       pickup_locked: false,
     };
   };
@@ -2961,7 +3006,7 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
   };
 
   const startManualWizard = () => {
-    setManualWizardStep('pickup');
+    setManualWizardStep('locations');
     setManualWizardError(null);
     setManualVinDecodeLoading(false);
     setShowCostEstimate(false);
@@ -3012,10 +3057,7 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
       const parsed = JSON.parse(raw) as unknown;
       if (!isRecord(parsed)) return null;
       const stepRaw = readString(parsed.step);
-      const step: ManualWizardStep =
-        stepRaw === 'pickup' || stepRaw === 'dropoff' || stepRaw === 'login' || stepRaw === 'quote' || stepRaw === 'vehicle' || stepRaw === 'confirm'
-          ? (stepRaw as ManualWizardStep)
-          : 'login';
+      const step: ManualWizardStep = stepRaw === 'locations' || stepRaw === 'vehicle' || stepRaw === 'quote' ? (stepRaw as ManualWizardStep) : 'locations';
 
       const nextFormDataRaw = (parsed as Record<string, unknown>).formData;
       const nextFormData = isRecord(nextFormDataRaw) ? (nextFormDataRaw as FormData) : null;
@@ -3185,13 +3227,14 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
   const fetchAddressSuggestions = async (query: string): Promise<AddressSuggestion[]> => {
     const q = String(query ?? '').trim();
     if (!q || q.length < 3) return [];
-    const url = `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/suggest?f=pjson&maxSuggestions=6&countryCode=CAN&text=${encodeURIComponent(q)}`;
+    const url = `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/suggest?f=pjson&maxSuggestions=6&countryCode=CAN&category=Address,POI&text=${encodeURIComponent(q)}`;
     const res = await fetch(url);
     if (!res.ok) return [];
     const data = (await res.json().catch(() => null)) as unknown;
     const suggestions = isRecord(data) ? (data as Record<string, unknown>).suggestions : null;
     if (!Array.isArray(suggestions)) return [];
-    return suggestions
+
+    const rawList = suggestions
       .map((s) => {
         const obj = s && typeof s === 'object' ? (s as Record<string, unknown>) : null;
         if (!obj) return null;
@@ -3201,6 +3244,28 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
         return magicKey ? ({ text, magicKey } as AddressSuggestion) : ({ text } as AddressSuggestion);
       })
       .filter((s): s is AddressSuggestion => s !== null);
+
+    const validateSuggestion = async (s: AddressSuggestion): Promise<boolean> => {
+      if (!s.magicKey) return looksLikeOntarioOrQuebecSuggestion(s.text);
+      try {
+        const validateUrl = `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=pjson&maxLocations=1&outFields=Region,Country,CountryCode&sourceCountry=CAN&magicKey=${encodeURIComponent(s.magicKey)}&text=${encodeURIComponent(s.text)}`;
+        const validateRes = await fetch(validateUrl);
+        if (!validateRes.ok) return false;
+        const json = (await validateRes.json().catch(() => null)) as unknown;
+        const candidates = isRecord(json) ? (json as Record<string, unknown>).candidates : null;
+        const first = Array.isArray(candidates) && candidates.length ? (candidates[0] as unknown) : null;
+        const attrs = isRecord(first) ? ((first as Record<string, unknown>).attributes as unknown) : null;
+        const region = isRecord(attrs) ? (attrs as Record<string, unknown>).Region : null;
+        return isOntarioOrQuebec(region);
+      } catch {
+        return false;
+      }
+    };
+
+    const keep = await Promise.all(rawList.map(async (s) => ({ s, ok: await validateSuggestion(s) })));
+    return keep
+      .filter((r) => r.ok)
+      .map((r) => r.s);
   };
 
   useEffect(() => {
@@ -3722,6 +3787,21 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
         [section]: {
           ...((prev[section] as unknown as Record<string, unknown>) ?? {}),
           [key]: value,
+        },
+      } as FormData;
+    });
+  };
+
+  const handlePickupAddressChange = (value: string) => {
+    const parsed = parseAddressToBreakdown(value);
+    setFormData((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        pickup_location: {
+          ...prev.pickup_location,
+          address: value,
+          ...parsed,
         },
       } as FormData;
     });
@@ -4370,7 +4450,7 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
       return;
     }
 
-    setVehicleCondition('runs_and_drives');
+    setVehicleCondition((formData as unknown as Record<string, unknown> | null)?.vehicle_condition === 'does_not_run_or_drive' ? 'does_not_run_or_drive' : 'runs_and_drives');
     setCheckoutConfirmations({
       pickupAddress: false,
       dropoffAddress: false,
@@ -4820,6 +4900,7 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
                   onChange={(e) => {
                     const next = String(e.target.value) === 'does_not_run_or_drive' ? 'does_not_run_or_drive' : 'runs_and_drives';
                     setVehicleCondition(next);
+                    setFormData((prev) => (prev ? ({ ...prev, vehicle_condition: next } satisfies FormData) : prev));
                     setCheckoutConfirmations((prev) => ({
                       ...prev,
                       vehicleRunsAndDrives: false,
@@ -5365,100 +5446,324 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
                   <form onSubmit={preventFormSubmit}>
                     <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
                       <div className="text-sm font-semibold text-gray-900">Manual quote wizard</div>
-                      <div className="mt-1 text-xs text-gray-600">
-                        Step {manualWizardStep === 'pickup' ? '1' : manualWizardStep === 'dropoff' ? '2' : manualWizardStep === 'login' ? '3' : manualWizardStep === 'quote' ? '4' : manualWizardStep === 'vehicle' ? '5' : '6'} of 6
-                      </div>
+                      <div className="mt-1 text-xs text-gray-600">Step {manualWizardStep === 'locations' ? '1' : manualWizardStep === 'vehicle' ? '2' : '3'} of 3</div>
                       {manualWizardError ? <div className="mt-3 text-sm font-medium text-red-600">{manualWizardError}</div> : null}
                     </div>
 
-                    {manualWizardStep === 'pickup' ? (
+                    {manualWizardStep === 'locations' ? (
+                      <>
                       <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
                         <div className="text-sm font-semibold text-gray-900">Enter Pickup Address</div>
-                        <div className="mt-1 text-sm text-gray-600">Start typing and choose an address in Canada.</div>
-                        <div className="mt-3 relative">
-                          <input
-                            value={pickupSearch}
-                            onChange={(e) => {
-                              const next = e.target.value;
-                              setPickupSearch(next);
-                              updateFormField('pickup_location', 'address', next);
-                              setDealershipCoords(null);
-                            }}
-                            autoComplete="shipping street-address"
-                            className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                            placeholder="e.g., 123 Main St, Montreal, QC"
-                          />
-                          {(pickupSuggestLoading || pickupSuggestions.length > 0) && pickupSearch.trim().length >= 3 ? (
-                            <div className="absolute z-10 mt-2 w-full overflow-hidden rounded-xl border border-gray-200 bg-white shadow-lg">
-                              {pickupSuggestLoading ? <div className="px-3 py-2 text-sm text-gray-500">Searching...</div> : null}
-                              {pickupSuggestions.map((s) => (
-                                <button
-                                  key={`${s.text}-${s.magicKey ?? ''}`}
-                                  type="button"
-                                  onClick={() => {
-                                    void (async () => {
-                                      setPickupSearch(s.text);
-                                      setPickupSuggestions([]);
-                                      updateFormField('pickup_location', 'address', s.text);
-                                      const coords = await geocodeAddress(s.text).catch(() => null);
-                                      if (coords) setDealershipCoords(coords);
-                                    })();
-                                  }}
-                                  className="block w-full text-left px-3 py-2 text-sm text-gray-800 hover:bg-gray-50"
-                                >
-                                  {s.text}
-                                </button>
-                              ))}
+                        <div className="mt-1 text-sm text-gray-600">Start typing the street address in Ontario or Quebec. We'll auto-fill the rest.</div>
+
+                        <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div>
+                            <label className="block text-sm text-gray-600 mb-1">Street Address</label>
+                            <div className="relative">
+                              <input
+                                name="pickup_address_line1"
+                                autoComplete="shipping address-line1"
+                                value={pickupStreetLine1Input}
+                                onChange={(e) => {
+                                  const next = e.target.value;
+                                  pickupStreetLine1EditingRef.current = true;
+                                  setPickupStreetLine1Input(next);
+                                  setPickupSearch(next);
+                                  setPickupStreetSelected(false);
+                                  setPickupNumberError(null);
+                                  setDealershipCoords(null);
+                                  const split = splitLine1ToNumberStreet(next);
+                                  setPickupAddressFromBreakdown({ street: split.street, number: split.number, area: '' });
+                                }}
+                                onFocus={() => {
+                                  pickupStreetLine1EditingRef.current = true;
+                                }}
+                                onBlur={() => {
+                                  pickupStreetLine1EditingRef.current = false;
+                                  const normalized = normalizeWhitespace(pickupStreetLine1Input);
+                                  setPickupStreetLine1Input(normalized);
+                                  setPickupSearch(normalized);
+                                  const split = splitLine1ToNumberStreet(normalized);
+                                  setPickupAddressFromBreakdown({ street: split.street, number: split.number, area: '' });
+                                }}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                                placeholder="e.g., 123 Main St"
+                              />
+                              {(pickupSuggestLoading || pickupSuggestions.length > 0) && pickupStreetLine1Input.trim().length >= 3 ? (
+                                <div className="absolute z-10 mt-2 w-full overflow-hidden rounded-xl border border-gray-200 bg-white shadow-lg">
+                                  {pickupSuggestLoading ? <div className="px-3 py-2 text-sm text-gray-500">Searching...</div> : null}
+                                  {pickupSuggestions.map((s) => (
+                                    <button
+                                      key={`${s.text}-${s.magicKey ?? ''}`}
+                                      type="button"
+                                      onMouseDown={(e) => {
+                                        e.preventDefault();
+                                        void (async () => {
+                                          setPickupSearch(s.text);
+                                          setPickupSuggestions([]);
+                                          handlePickupAddressChange(s.text);
+                                          setPickupStreetSelected(true);
+                                          setPickupNumberError(null);
+                                          const coords = await geocodeAddress(s.text).catch(() => null);
+                                          if (coords) setDealershipCoords(coords);
+                                        })();
+                                      }}
+                                      className="block w-full text-left px-3 py-2 text-sm text-gray-800 hover:bg-gray-50"
+                                    >
+                                      {s.text}
+                                    </button>
+                                  ))}
+                                </div>
+                              ) : null}
                             </div>
-                          ) : null}
+                            {pickupNumberError ? <div className="mt-2 text-xs font-medium text-red-600">{pickupNumberError}</div> : null}
+                          </div>
+                          <div>
+                            <label className="block text-sm text-gray-600 mb-1">Suite/Apt</label>
+                            <input
+                              name="pickup_address_line2"
+                              autoComplete="shipping address-line2"
+                              value={String(formData?.pickup_location?.unit ?? '')}
+                              onChange={(e) => {
+                                setPickupAddressFromBreakdown({ unit: e.target.value, area: '' });
+                              }}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                              placeholder="apt/suite #"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm text-gray-600 mb-1">City</label>
+                            <input
+                              name="pickup_city"
+                              autoComplete="shipping address-level2"
+                              value={String(formData?.pickup_location?.city ?? '')}
+                              onChange={(e) => {
+                                setPickupAddressFromBreakdown({ city: e.target.value, area: '' });
+                              }}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                              placeholder="city"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm text-gray-600 mb-1">Province</label>
+                            <select
+                              name="pickup_province"
+                              autoComplete="shipping address-level1"
+                              value={String(formData?.pickup_location?.province ?? '')}
+                              onChange={(e) => {
+                                setPickupAddressFromBreakdown({ province: e.target.value, area: '' });
+                              }}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white"
+                            >
+                              <option value="">Select</option>
+                              <option value="ON">Ontario</option>
+                              <option value="QC">Quebec</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-sm text-gray-600 mb-1">Postal Code</label>
+                            <input
+                              name="pickup_postal_code"
+                              autoComplete="shipping postal-code"
+                              value={String(formData?.pickup_location?.postal_code ?? '')}
+                              onChange={(e) => setPickupAddressFromBreakdown({ postal_code: e.target.value, area: '' })}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                              placeholder="Postal Code"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm text-gray-600 mb-1">Country</label>
+                            <input
+                              name="pickup_country"
+                              autoComplete="shipping country-name"
+                              value="CA"
+                              readOnly
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-800"
+                            />
+                          </div>
                         </div>
                       </div>
-                    ) : manualWizardStep === 'dropoff' ? (
-                      <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
-                        <div className="text-sm font-semibold text-gray-900">Enter Drop-off Address</div>
-                        <div className="mt-1 text-sm text-gray-600">Start typing and choose an address in Canada.</div>
-                        <div className="mt-3 relative">
-                          <input
-                            value={dropoffSearch}
-                            onChange={(e) => {
-                              const next = e.target.value;
-                              setDropoffSearch(next);
-                              updateFormField('dropoff_location', 'address', next);
-                              updateFormField('dropoff_location', 'lat', '');
-                              updateFormField('dropoff_location', 'lng', '');
-                            }}
-                            autoComplete="billing street-address"
-                            className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                            placeholder="e.g., 456 King St, Ottawa, ON"
-                          />
-                          {(dropoffSuggestLoading || dropoffSuggestions.length > 0) && dropoffSearch.trim().length >= 3 ? (
-                            <div className="absolute z-10 mt-2 w-full overflow-hidden rounded-xl border border-gray-200 bg-white shadow-lg">
-                              {dropoffSuggestLoading ? <div className="px-3 py-2 text-sm text-gray-500">Searching...</div> : null}
-                              {dropoffSuggestions.map((s) => (
-                                <button
-                                  key={`${s.text}-${s.magicKey ?? ''}`}
-                                  type="button"
-                                  onClick={() => {
-                                    void (async () => {
-                                      setDropoffSearch(s.text);
-                                      setDropoffSuggestions([]);
-                                      updateFormField('dropoff_location', 'address', s.text);
-                                      const coords = await geocodeAddress(s.text).catch(() => null);
-                                      if (coords) {
-                                        updateFormField('dropoff_location', 'lat', String(coords.lat));
-                                        updateFormField('dropoff_location', 'lng', String(coords.lng));
-                                      }
-                                    })();
-                                  }}
-                                  className="block w-full text-left px-3 py-2 text-sm text-gray-800 hover:bg-gray-50"
-                                >
-                                  {s.text}
-                                </button>
-                              ))}
-                            </div>
-                          ) : null}
-                        </div>
 
+                      <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
+                        <div className="text-sm font-semibold text-gray-900">Pickup Contact</div>
+                        <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div>
+                            <label className="block text-sm text-gray-600 mb-1">Company name</label>
+                            <input
+                              value={String(formData?.pickup_location?.name ?? '')}
+                              onChange={(e) => updateFormField('pickup_location', 'name', e.target.value)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                              placeholder="Company name"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm text-gray-600 mb-1">Complete name</label>
+                            <input
+                              value={String((formData?.pickup_location as unknown as Record<string, unknown>)?.contact_name ?? '')}
+                              onChange={(e) =>
+                                updateFormField('pickup_location', 'contact_name' as keyof FormData['pickup_location'] & string, e.target.value)
+                              }
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                              placeholder="Lastname, Firstname"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm text-gray-600 mb-1">Email</label>
+                            <input
+                              value={String((formData?.pickup_location as unknown as Record<string, unknown>)?.email ?? '')}
+                              onChange={(e) => updateFormField('pickup_location', 'email' as keyof FormData['pickup_location'] & string, e.target.value)}
+                              inputMode="email"
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                              placeholder="email"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm text-gray-600 mb-1">Phone number</label>
+                            <input
+                              value={String(formData?.pickup_location?.phone ?? '')}
+                              onChange={(e) => updateFormField('pickup_location', 'phone', sanitizePhone(e.target.value))}
+                              inputMode="tel"
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                              placeholder="phone"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
+                        <div className="text-sm font-semibold text-gray-900">Drop-off</div>
+                        <div className="mt-1 text-sm text-gray-600">Enter drop-off address and contact details.</div>
+
+                        <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div>
+                            <label className="block text-sm text-gray-600 mb-1">Street Address</label>
+                            <div className="relative">
+                              <input
+                                name="dropoff_address_line1"
+                                autoComplete="billing address-line1"
+                                value={dropoffStreetLine1Input}
+                                onChange={(e) => {
+                                  const next = e.target.value;
+                                  dropoffStreetLine1EditingRef.current = true;
+                                  setDropoffStreetLine1Input(next);
+                                  setDropoffSearch(next);
+                                  setDropoffStreetSelected(false);
+                                  setDropoffNumberError(null);
+                                  updateFormField('dropoff_location', 'lat', '');
+                                  updateFormField('dropoff_location', 'lng', '');
+                                  const split = splitLine1ToNumberStreet(next);
+                                  setDropoffAddressFromBreakdown({ street: split.street, number: split.number, area: '' });
+                                }}
+                                onFocus={() => {
+                                  dropoffStreetLine1EditingRef.current = true;
+                                }}
+                                onBlur={() => {
+                                  dropoffStreetLine1EditingRef.current = false;
+                                  const normalized = normalizeWhitespace(dropoffStreetLine1Input);
+                                  setDropoffStreetLine1Input(normalized);
+                                  setDropoffSearch(normalized);
+                                  const split = splitLine1ToNumberStreet(normalized);
+                                  setDropoffAddressFromBreakdown({ street: split.street, number: split.number, area: '' });
+                                }}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                                placeholder="e.g., 456 King St"
+                              />
+                              {(dropoffSuggestLoading || dropoffSuggestions.length > 0) && dropoffStreetLine1Input.trim().length >= 3 ? (
+                                <div className="absolute z-10 mt-2 w-full overflow-hidden rounded-xl border border-gray-200 bg-white shadow-lg">
+                                  {dropoffSuggestLoading ? <div className="px-3 py-2 text-sm text-gray-500">Searching...</div> : null}
+                                  {dropoffSuggestions.map((s) => (
+                                    <button
+                                      key={`${s.text}-${s.magicKey ?? ''}`}
+                                      type="button"
+                                      onMouseDown={(e) => {
+                                        e.preventDefault();
+                                        void (async () => {
+                                          setDropoffSearch(s.text);
+                                          setDropoffSuggestions([]);
+                                          handleDropoffAddressChange(s.text);
+                                          setDropoffStreetSelected(true);
+                                          setDropoffNumberError(null);
+                                          const coords = await geocodeAddress(s.text).catch(() => null);
+                                          if (coords) {
+                                            updateFormField('dropoff_location', 'lat', String(coords.lat));
+                                            updateFormField('dropoff_location', 'lng', String(coords.lng));
+                                          }
+                                        })();
+                                      }}
+                                      className="block w-full text-left px-3 py-2 text-sm text-gray-800 hover:bg-gray-50"
+                                    >
+                                      {s.text}
+                                    </button>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
+                            {dropoffNumberError ? <div className="mt-2 text-xs font-medium text-red-600">{dropoffNumberError}</div> : null}
+                          </div>
+                          <div>
+                            <label className="block text-sm text-gray-600 mb-1">Suite/Apt</label>
+                            <input
+                              name="dropoff_address_line2"
+                              autoComplete="billing address-line2"
+                              value={String(formData?.dropoff_location?.unit ?? '')}
+                              onChange={(e) => {
+                                setDropoffAddressFromBreakdown({ unit: e.target.value, area: '' });
+                              }}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                              placeholder="apt/suite #"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm text-gray-600 mb-1">City</label>
+                            <input
+                              name="dropoff_city"
+                              autoComplete="billing address-level2"
+                              value={String(formData?.dropoff_location?.city ?? '')}
+                              onChange={(e) => {
+                                setDropoffAddressFromBreakdown({ city: e.target.value, area: '' });
+                              }}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                              placeholder="city"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm text-gray-600 mb-1">Province</label>
+                            <select
+                              name="dropoff_province"
+                              autoComplete="billing address-level1"
+                              value={String(formData?.dropoff_location?.province ?? '')}
+                              onChange={(e) => {
+                                setDropoffAddressFromBreakdown({ province: e.target.value, area: '' });
+                              }}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white"
+                            >
+                              <option value="">Select</option>
+                              <option value="ON">Ontario</option>
+                              <option value="QC">Quebec</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-sm text-gray-600 mb-1">Postal Code</label>
+                            <input
+                              name="dropoff_postal_code"
+                              autoComplete="billing postal-code"
+                              value={String(formData?.dropoff_location?.postal_code ?? '')}
+                              onChange={(e) => setDropoffAddressFromBreakdown({ postal_code: e.target.value, area: '' })}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                              placeholder="Postal Code"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm text-gray-600 mb-1">Country</label>
+                            <input
+                              name="dropoff_country"
+                              autoComplete="billing country-name"
+                              value="CA"
+                              readOnly
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-800"
+                            />
+                          </div>
+                        </div>
                         <div className="mt-4 border border-gray-200 rounded-lg overflow-hidden bg-white h-60 sm:h-80 relative z-0">
                           <MapContainer
                             center={dropoffCoords ? [dropoffCoords.lat, dropoffCoords.lng] : dealershipCoords ? [dealershipCoords.lat, dealershipCoords.lng] : [45.5017, -73.5673]}
@@ -5476,68 +5781,151 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
                           </MapContainer>
                         </div>
                       </div>
-                    ) : manualWizardStep === 'login' ? (
+
                       <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
-                        <div className="text-sm font-semibold text-gray-900">Login</div>
-                        <div className="mt-1 text-sm text-gray-600">Log in with Google to see your quote.</div>
-                        {!isLoggedIn ? (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              void (async () => {
-                                setResumeManualWizardAfterLogin('login');
-                                hideManualFormKeepState();
-
-                                const safeCost: CostData | null = costData
-                                  ? { distance: costData.distance, cost: costData.cost, duration: costData.duration, pricingStatus: costData.pricingStatus }
-                                  : null;
-
-                                persistManualResumeState({
-                                  step: 'login',
-                                  formData,
-                                  costData: safeCost,
-                                  pickupSearch,
-                                  dropoffSearch,
-                                });
-
-                                await saveDraftBeforeSignIn({ formData, costData: safeCost }).catch(() => null);
-                                onContinueToSignIn?.();
-                              })();
-                            }}
-                            className="mt-4 inline-flex justify-center rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 transition-colors"
-                          >
-                            Log in with Google
-                          </button>
-                        ) : (
-                          <div className="mt-3 text-sm font-medium text-emerald-700">Logged in. Click Next to calculate your quote.</div>
-                        )}
+                        <div className="text-sm font-semibold text-gray-900">Drop-off Contact</div>
+                        <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div>
+                            <label className="block text-sm text-gray-600 mb-1">Company name</label>
+                            <input
+                              value={String(formData?.dropoff_location?.name ?? '')}
+                              onChange={(e) => updateFormField('dropoff_location', 'name', e.target.value)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                              placeholder="Company name"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm text-gray-600 mb-1">Complete name</label>
+                            <input
+                              value={String((formData?.dropoff_location as unknown as Record<string, unknown>)?.contact_name ?? '')}
+                              onChange={(e) =>
+                                updateFormField('dropoff_location', 'contact_name' as keyof FormData['dropoff_location'] & string, e.target.value)
+                              }
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                              placeholder="Lastname, Firstname"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm text-gray-600 mb-1">Email</label>
+                            <input
+                              value={String((formData?.dropoff_location as unknown as Record<string, unknown>)?.email ?? '')}
+                              onChange={(e) => updateFormField('dropoff_location', 'email' as keyof FormData['dropoff_location'] & string, e.target.value)}
+                              inputMode="email"
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                              placeholder="email"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm text-gray-600 mb-1">Phone number</label>
+                            <input
+                              value={String(formData?.dropoff_location?.phone ?? '')}
+                              onChange={(e) => updateFormField('dropoff_location', 'phone', sanitizePhone(e.target.value))}
+                              inputMode="tel"
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                              placeholder="phone"
+                            />
+                          </div>
+                        </div>
                       </div>
+                      </>
                     ) : manualWizardStep === 'quote' ? (
                       <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
                         <div className="text-sm font-semibold text-gray-900">Quote</div>
-                        <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
-                          <div className="rounded-lg bg-gray-50 border border-gray-200 p-3">
-                            <div className="text-xs font-medium text-gray-500">Distance</div>
-                            <div className="mt-1 font-semibold text-gray-900">{Number(costData?.distance ?? 0) || 0} km</div>
-                          </div>
-                          <div className="rounded-lg bg-gray-50 border border-gray-200 p-3">
-                            <div className="text-xs font-medium text-gray-500">Rate</div>
-                            <div className="mt-1 font-semibold text-gray-900">${getDistanceRatePerKm()}/km</div>
-                          </div>
-                          <div className="rounded-lg bg-gray-50 border border-gray-200 p-3">
-                            <div className="text-xs font-medium text-gray-500">Minimum</div>
-                            <div className="mt-1 font-semibold text-gray-900">$150</div>
-                          </div>
-                        </div>
-                        <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50 p-4">
-                          <div className="text-xs font-medium text-gray-500">Estimated price (before tax)</div>
-                          <div className="mt-1 text-2xl font-bold text-gray-900">${Number(costData?.cost ?? 0) || 0}</div>
-                        </div>
+                        {!isLoggedIn ? (
+                          <>
+                            <div className="mt-1 text-sm text-gray-600">Log in with Google to calculate pricing.</div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void (async () => {
+                                  setResumeManualWizardAfterLogin('quote');
+                                  hideManualFormKeepState();
+
+                                  const safeCost: CostData | null = costData
+                                    ? { distance: costData.distance, cost: costData.cost, duration: costData.duration, pricingStatus: costData.pricingStatus }
+                                    : null;
+
+                                  persistManualResumeState({
+                                    step: 'quote',
+                                    formData,
+                                    costData: safeCost,
+                                    pickupSearch,
+                                    dropoffSearch,
+                                  });
+
+                                  await saveDraftBeforeSignIn({ formData, costData: safeCost }).catch(() => null);
+                                  onContinueToSignIn?.();
+                                })();
+                              }}
+                              className="mt-4 inline-flex justify-center rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 transition-colors"
+                            >
+                              Log in with Google
+                            </button>
+                          </>
+                        ) : null}
+
+                        {isLoggedIn ? (
+                          <>
+                            <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
+                              <div className="rounded-lg bg-gray-50 border border-gray-200 p-3">
+                                <div className="text-xs font-medium text-gray-500">Distance</div>
+                                <div className="mt-1 font-semibold text-gray-900">{Number(costData?.distance ?? 0) || 0} km</div>
+                              </div>
+                              <div className="rounded-lg bg-gray-50 border border-gray-200 p-3">
+                                <div className="text-xs font-medium text-gray-500">Rate</div>
+                                <div className="mt-1 font-semibold text-gray-900">${getDistanceRatePerKm()}/km</div>
+                              </div>
+                              <div className="rounded-lg bg-gray-50 border border-gray-200 p-3">
+                                <div className="text-xs font-medium text-gray-500">Minimum</div>
+                                <div className="mt-1 font-semibold text-gray-900">$150</div>
+                              </div>
+                            </div>
+                            <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50 p-4">
+                              <div className="text-xs font-medium text-gray-500">Estimated price (before tax)</div>
+                              <div className="mt-1 text-2xl font-bold text-gray-900">${Number(costData?.cost ?? 0) || 0}</div>
+                            </div>
+                          </>
+                        ) : null}
                       </div>
                     ) : manualWizardStep === 'vehicle' ? (
                       <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
                         <div className="text-sm font-semibold text-gray-900">Vehicle details</div>
-                        <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div className="mt-4">
+                          <div className="text-sm font-semibold text-gray-900">Vehicle running / drivable</div>
+                          <div className="mt-1 text-sm text-gray-600">Is the vehicle able to run and drive at pickup?</div>
+                          <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setVehicleCondition('runs_and_drives');
+                                setFormData((prev) => (prev ? ({ ...prev, vehicle_condition: 'runs_and_drives' } satisfies FormData) : prev));
+                              }}
+                              className={`inline-flex items-center justify-center rounded-xl border px-4 py-2.5 text-sm font-semibold transition-colors ${
+                                vehicleCondition === 'runs_and_drives'
+                                  ? 'border-cyan-300 bg-cyan-50 text-cyan-900'
+                                  : 'border-gray-300 bg-white text-gray-800 hover:bg-gray-50'
+                              }`}
+                            >
+                              Yes (Runs & drives)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setVehicleCondition('does_not_run_or_drive');
+                                setFormData((prev) => (prev ? ({ ...prev, vehicle_condition: 'does_not_run_or_drive' } satisfies FormData) : prev));
+                              }}
+                              className={`inline-flex items-center justify-center rounded-xl border px-4 py-2.5 text-sm font-semibold transition-colors ${
+                                vehicleCondition === 'does_not_run_or_drive'
+                                  ? 'border-amber-300 bg-amber-50 text-amber-900'
+                                  : 'border-gray-300 bg-white text-gray-800 hover:bg-gray-50'
+                              }`}
+                            >
+                              No (Not drivable)
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
                           <div>
                             <label className="block text-sm text-gray-600 mb-1">VIN</label>
                             <div className="flex gap-2">
@@ -5604,16 +5992,7 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
                           </div>
                         </div>
                       </div>
-                    ) : (
-                      <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
-                        <div className="text-sm font-semibold text-gray-900">Confirm & checkout</div>
-                        <div className="mt-1 text-sm text-gray-600">Next will open checkout. If you are not logged in, we will save a draft and ask you to log in.</div>
-                        <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50 p-4">
-                          <div className="text-xs font-medium text-gray-500">Estimated price (before tax)</div>
-                          <div className="mt-1 text-2xl font-bold text-gray-900">${Number(costData?.cost ?? 0) || 0}</div>
-                        </div>
-                      </div>
-                    )}
+                    ) : null}
 
                     <div className="mt-6 flex flex-col-reverse sm:flex-row sm:justify-between gap-3">
                       <button
@@ -5637,12 +6016,10 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
                           type="button"
                           onClick={() => {
                             setManualWizardError(null);
-                            if (manualWizardStep === 'pickup') return;
-                            if (manualWizardStep === 'dropoff') return setManualWizardStep('pickup');
-                            if (manualWizardStep === 'login') return setManualWizardStep('dropoff');
-                            if (manualWizardStep === 'quote') return setManualWizardStep('login');
-                            if (manualWizardStep === 'vehicle') return setManualWizardStep('quote');
-                            return setManualWizardStep('vehicle');
+                            if (manualWizardStep === 'locations') return;
+                            if (manualWizardStep === 'vehicle') return setManualWizardStep('locations');
+                            if (manualWizardStep === 'quote') return setManualWizardStep('vehicle');
+                            return setManualWizardStep('quote');
                           }}
                           className="w-full sm:w-auto px-6 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium"
                         >
@@ -5653,20 +6030,28 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
                           onClick={() => {
                             void (async () => {
                               setManualWizardError(null);
-                              if (manualWizardStep === 'pickup') return setManualWizardStep('dropoff');
-                              if (manualWizardStep === 'dropoff') return setManualWizardStep('login');
-                              if (manualWizardStep === 'login') {
+                              if (manualWizardStep === 'locations') return setManualWizardStep('vehicle');
+                              if (manualWizardStep === 'vehicle') {
                                 if (!isLoggedIn) {
-                                  setManualWizardError('Please log in to get your quote.');
+                                  setManualWizardStep('quote');
                                   return;
                                 }
                                 const ok = await computeManualQuote();
                                 if (ok) setManualWizardStep('quote');
                                 return;
                               }
-                              if (manualWizardStep === 'quote') return setManualWizardStep('vehicle');
-                              if (manualWizardStep === 'vehicle') return setManualWizardStep('confirm');
-                              if (manualWizardStep === 'confirm') {
+                              if (manualWizardStep === 'quote') {
+                                if (!isLoggedIn) {
+                                  setManualWizardError('Please log in to proceed to checkout.');
+                                  return;
+                                }
+
+                                const hasQuote = Boolean(Number(costData?.cost ?? 0)) && Boolean(Number(costData?.distance ?? 0));
+                                if (!hasQuote) {
+                                  const ok = await computeManualQuote();
+                                  if (!ok) return;
+                                }
+
                                 hideManualFormKeepState();
                                 await handleProceedWithCost();
                               }
@@ -5675,7 +6060,7 @@ export default function FileUploadSection({ hideHeader: _hideHeader = false, onC
                           disabled={isSubmitting}
                           className="w-full sm:w-auto px-6 py-3 bg-cyan-500 text-white rounded-lg hover:bg-cyan-600 transition-colors font-medium disabled:opacity-60 disabled:cursor-not-allowed"
                         >
-                          {manualWizardStep === 'confirm' ? 'Open checkout' : 'Next'}
+                          {manualWizardStep === 'quote' ? 'Proceed to checkout' : 'Next'}
                         </button>
                       </div>
                     </div>

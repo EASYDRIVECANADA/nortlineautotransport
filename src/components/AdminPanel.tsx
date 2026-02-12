@@ -29,13 +29,18 @@ const escapeCsv = (value: unknown) => {
 
 type WorkOrderFields = {
   pickup_name: string;
+  pickup_contact_name: string;
+  pickup_email: string;
   pickup_phone: string;
   pickup_address: string;
   dropoff_name: string;
+  dropoff_contact_name: string;
+  dropoff_email: string;
   dropoff_phone: string;
   dropoff_address: string;
   vehicle: string;
   vin: string;
+  vehicle_condition: 'runs_and_drives' | 'does_not_run_or_drive' | '';
   transaction_id: string;
   release_form_number: string;
   arrival_date: string;
@@ -65,6 +70,10 @@ const getWorkOrderFields = (order: LocalOrder): WorkOrderFields => {
   const dropoff = readObj(form?.dropoff_location);
   const txn = readObj(form?.transaction);
 
+  const vehicleConditionRaw = (form as Record<string, unknown> | null)?.vehicle_condition;
+  const vehicleCondition =
+    vehicleConditionRaw === 'does_not_run_or_drive' || vehicleConditionRaw === 'runs_and_drives' ? (vehicleConditionRaw as WorkOrderFields['vehicle_condition']) : '';
+
   const year = readStr(vehicle?.year);
   const make = readStr(vehicle?.make);
   const model = readStr(vehicle?.model);
@@ -72,13 +81,18 @@ const getWorkOrderFields = (order: LocalOrder): WorkOrderFields => {
 
   return {
     pickup_name: readStr(pickup?.name),
+    pickup_contact_name: readStr(pickup?.contact_name),
+    pickup_email: readStr(pickup?.email),
     pickup_phone: readStr(pickup?.phone),
     pickup_address: readStr(pickup?.address),
     dropoff_name: readStr(dropoff?.name),
+    dropoff_contact_name: readStr(dropoff?.contact_name),
+    dropoff_email: readStr(dropoff?.email),
     dropoff_phone: readStr(dropoff?.phone),
     dropoff_address: readStr(dropoff?.address),
     vehicle: vehicleLabel,
     vin: readStr(vehicle?.vin),
+    vehicle_condition: vehicleCondition,
     transaction_id: readStr(txn?.transaction_id ?? (form as Record<string, unknown>)?.transaction_id),
     release_form_number: readStr(txn?.release_form_number ?? (form as Record<string, unknown>)?.release_form_number),
     arrival_date: readStr(txn?.arrival_date ?? (form as Record<string, unknown>)?.arrival_date),
@@ -530,12 +544,21 @@ export default function AdminPanel({ onBack, embedded = false, role = 'admin' }:
           </div>
         ) : null}
 
-        <div className={embedded ? 'grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6' : 'mt-5 grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6'}>
-          <div className="lg:col-span-1">
-            <div className="rounded-2xl bg-white border border-gray-200 shadow-sm overflow-hidden">
+        <div
+          className={
+            embedded
+              ? 'grid grid-cols-1 lg:grid-cols-[minmax(320px,400px)_1fr] gap-4 sm:gap-6'
+              : 'mt-5 grid grid-cols-1 lg:grid-cols-[minmax(320px,400px)_1fr] gap-4 sm:gap-6'
+          }
+        >
+          <div>
+            <div className="rounded-2xl bg-white border border-gray-200 shadow-sm overflow-hidden flex flex-col max-h-[calc(100vh-9.5rem)]">
               <div className="p-4 border-b border-gray-100">
                 <div className="flex items-center justify-between gap-3">
-                  <div className="text-sm font-semibold text-gray-900">Work orders</div>
+                  <div>
+                    <div className="text-sm font-semibold text-gray-900">Work orders</div>
+                    <div className="mt-1 text-xs text-gray-600">Search, filter, and manage customer orders.</div>
+                  </div>
                   {!isEmployee ? (
                     <button
                       type="button"
@@ -588,48 +611,63 @@ export default function AdminPanel({ onBack, embedded = false, role = 'admin' }:
                 <div className="mt-3 text-xs text-gray-500">Showing {filtered.length} orders</div>
               </div>
 
-              <div className="p-3">
+              <div className="p-3 flex-1 overflow-hidden">
                 {filtered.length === 0 ? (
                   <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-600">No orders.</div>
                 ) : (
-                  <div className="space-y-2 max-h-[calc(100vh-18rem)] overflow-auto">
+                  <div className="space-y-2 h-full overflow-auto pr-1">
                     {filtered.map((o) => {
                       const active = o.id === selectedId;
                       const wo = getWorkOrderFields(o);
                       const pickupLabel = wo.pickup_address || wo.pickup_name;
                       const dropoffLabel = wo.dropoff_address || wo.dropoff_name;
+                      const shortLabel = (s: string | undefined | null) => {
+                        const raw = String(s ?? '').trim();
+                        if (!raw) return '';
+                        const first = raw.split(',')[0]?.trim();
+                        return first || raw;
+                      };
+                      const pickupShort = shortLabel(pickupLabel);
+                      const dropoffShort = shortLabel(dropoffLabel);
+                      const routeShort = pickupShort && dropoffShort ? `${pickupShort} → ${dropoffShort}` : shortLabel(o.route_area);
                       return (
                         <button
                           key={o.id}
                           type="button"
                           onClick={() => setSelectedId(o.id)}
-                          className={`w-full text-left rounded-xl border px-3 py-3 transition-colors ${
-                            active ? 'border-cyan-300 bg-cyan-50' : 'border-gray-200 bg-white hover:bg-gray-50'
+                          className={`w-full text-left rounded-xl border px-3 py-2.5 transition-colors ${
+                            active ? 'border-cyan-300 bg-cyan-50 shadow-sm' : 'border-gray-200 bg-white hover:bg-gray-50'
                           }`}
                         >
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="text-sm font-semibold text-gray-900 truncate">{o.id}</div>
-                            <div className="flex items-center gap-2">
-                              <div className="text-[11px] font-semibold text-gray-600">{o.status}</div>
-                              <div
-                                className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="text-sm font-semibold text-gray-900 truncate">{o.id}</div>
+                              <div className="mt-0.5 text-xs text-gray-600 truncate">{routeShort || '-'}</div>
+                            </div>
+
+                            <div className="flex flex-col items-end gap-1 shrink-0">
+                              <span className="inline-flex items-center rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-gray-700 ring-1 ring-gray-200">
+                                {o.status}
+                              </span>
+                              <span
+                                className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ${
                                   (o.payment_status ?? 'unpaid') === 'paid'
-                                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                    ? 'bg-emerald-50 text-emerald-700 ring-emerald-200'
                                     : (o.payment_status ?? 'unpaid') === 'pending'
-                                      ? 'border-amber-200 bg-amber-50 text-amber-700'
+                                      ? 'bg-amber-50 text-amber-700 ring-amber-200'
                                       : (o.payment_status ?? 'unpaid') === 'failed'
-                                        ? 'border-red-200 bg-red-50 text-red-700'
-                                        : 'border-gray-200 bg-gray-50 text-gray-700'
+                                        ? 'bg-red-50 text-red-700 ring-red-200'
+                                        : 'bg-gray-50 text-gray-700 ring-gray-200'
                                 }`}
                               >
                                 {(o.payment_status ?? 'unpaid').toUpperCase()}
-                              </div>
+                              </span>
                             </div>
                           </div>
-                          <div className="mt-1 text-xs text-gray-600 truncate">{pickupLabel && dropoffLabel ? `${pickupLabel} → ${dropoffLabel}` : o.route_area}</div>
-                          <div className="mt-1 flex items-center justify-between gap-2 text-xs text-gray-600">
-                            <div className="truncate">{wo.vehicle || o.route_area}</div>
-                            <div>{new Date(o.updated_at).toLocaleString()}</div>
+
+                          <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-gray-500">
+                            <div className="truncate">{wo.vehicle || '—'}</div>
+                            <div className="shrink-0">{new Date(o.updated_at).toLocaleDateString()}</div>
                           </div>
                         </button>
                       );
@@ -640,11 +678,38 @@ export default function AdminPanel({ onBack, embedded = false, role = 'admin' }:
             </div>
           </div>
 
-          <div className="lg:col-span-2">
-            <div className="rounded-2xl bg-white border border-gray-200 shadow-sm overflow-hidden">
+          <div>
+            <div className="rounded-2xl bg-white border border-gray-200 shadow-sm overflow-hidden flex flex-col max-h-[calc(100vh-9.5rem)]">
               <div className="p-4 border-b border-gray-100">
-                <div className="text-sm font-semibold text-gray-900">Work order details</div>
-                <div className="text-xs text-gray-600">Pickup / dropoff + update status + timeline notes</div>
+                <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-gray-900">Work order details</div>
+                    <div className="text-xs text-gray-600">Pickup / dropoff + update status + timeline notes</div>
+                  </div>
+                  {selectedOrder ? (
+                    <div className="flex flex-wrap items-center justify-start sm:justify-end gap-2">
+                      <span className="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-semibold text-gray-800 ring-1 ring-gray-200">
+                        {selectedOrder.id}
+                      </span>
+                      <span className="inline-flex items-center rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-gray-700 ring-1 ring-gray-200">
+                        {selectedOrder.status}
+                      </span>
+                      <span
+                        className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ${
+                          (selectedOrder.payment_status ?? 'unpaid') === 'paid'
+                            ? 'bg-emerald-50 text-emerald-700 ring-emerald-200'
+                            : (selectedOrder.payment_status ?? 'unpaid') === 'pending'
+                              ? 'bg-amber-50 text-amber-700 ring-amber-200'
+                              : (selectedOrder.payment_status ?? 'unpaid') === 'failed'
+                                ? 'bg-red-50 text-red-700 ring-red-200'
+                                : 'bg-gray-50 text-gray-700 ring-gray-200'
+                        }`}
+                      >
+                        {(selectedOrder.payment_status ?? 'unpaid').toUpperCase()}
+                      </span>
+                    </div>
+                  ) : null}
+                </div>
               </div>
 
               {!selectedOrder ? (
@@ -652,7 +717,7 @@ export default function AdminPanel({ onBack, embedded = false, role = 'admin' }:
                   <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-600">Select an order to manage.</div>
                 </div>
               ) : (
-                <div className="p-4 space-y-4">
+                <div className="p-4 space-y-4 overflow-auto flex-1">
                   {(() => {
                     const wo = getWorkOrderFields(selectedOrder);
                     return (
@@ -685,7 +750,33 @@ export default function AdminPanel({ onBack, embedded = false, role = 'admin' }:
                           ) : (
                             <>
                               <div className="mt-1 text-sm font-semibold text-gray-900">{wo.pickup_address || '-'}</div>
-                              <div className="mt-1 text-xs text-gray-600">{[wo.pickup_name, wo.pickup_phone].filter(Boolean).join(' • ') || ' '}</div>
+                              <div className="mt-2 grid grid-cols-1 gap-1 text-xs text-gray-700">
+                                {wo.pickup_name ? (
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div className="text-gray-500">Company</div>
+                                    <div className="font-semibold text-gray-900 text-right break-words">{wo.pickup_name}</div>
+                                  </div>
+                                ) : null}
+                                {wo.pickup_contact_name ? (
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div className="text-gray-500">Contact</div>
+                                    <div className="font-semibold text-gray-900 text-right break-words">{wo.pickup_contact_name}</div>
+                                  </div>
+                                ) : null}
+                                {wo.pickup_phone ? (
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div className="text-gray-500">Phone</div>
+                                    <div className="font-semibold text-gray-900 text-right break-words">{wo.pickup_phone}</div>
+                                  </div>
+                                ) : null}
+                                {wo.pickup_email ? (
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div className="text-gray-500">Email</div>
+                                    <div className="font-semibold text-gray-900 text-right break-words">{wo.pickup_email}</div>
+                                  </div>
+                                ) : null}
+                                {!wo.pickup_name && !wo.pickup_contact_name && !wo.pickup_phone && !wo.pickup_email ? <div className="text-gray-500">-</div> : null}
+                              </div>
                             </>
                           )}
                         </div>
@@ -717,7 +808,33 @@ export default function AdminPanel({ onBack, embedded = false, role = 'admin' }:
                           ) : (
                             <>
                               <div className="mt-1 text-sm font-semibold text-gray-900">{wo.dropoff_address || '-'}</div>
-                              <div className="mt-1 text-xs text-gray-600">{[wo.dropoff_name, wo.dropoff_phone].filter(Boolean).join(' • ') || ' '}</div>
+                              <div className="mt-2 grid grid-cols-1 gap-1 text-xs text-gray-700">
+                                {wo.dropoff_name ? (
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div className="text-gray-500">Company</div>
+                                    <div className="font-semibold text-gray-900 text-right break-words">{wo.dropoff_name}</div>
+                                  </div>
+                                ) : null}
+                                {wo.dropoff_contact_name ? (
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div className="text-gray-500">Contact</div>
+                                    <div className="font-semibold text-gray-900 text-right break-words">{wo.dropoff_contact_name}</div>
+                                  </div>
+                                ) : null}
+                                {wo.dropoff_phone ? (
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div className="text-gray-500">Phone</div>
+                                    <div className="font-semibold text-gray-900 text-right break-words">{wo.dropoff_phone}</div>
+                                  </div>
+                                ) : null}
+                                {wo.dropoff_email ? (
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div className="text-gray-500">Email</div>
+                                    <div className="font-semibold text-gray-900 text-right break-words">{wo.dropoff_email}</div>
+                                  </div>
+                                ) : null}
+                                {!wo.dropoff_name && !wo.dropoff_contact_name && !wo.dropoff_phone && !wo.dropoff_email ? <div className="text-gray-500">-</div> : null}
+                              </div>
                             </>
                           )}
                         </div>
@@ -734,7 +851,10 @@ export default function AdminPanel({ onBack, embedded = false, role = 'admin' }:
                               />
                             </div>
                           ) : (
-                            <div className="mt-1 text-xs text-gray-600">VIN: {wo.vin || '-'}</div>
+                            <div className="mt-1 text-xs text-gray-600">
+                              VIN: {wo.vin || '-'}
+                              {wo.vehicle_condition ? ` • ${wo.vehicle_condition === 'runs_and_drives' ? 'Runs & drives' : 'Not drivable'}` : ''}
+                            </div>
                           )}
                         </div>
                         <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
@@ -851,7 +971,9 @@ export default function AdminPanel({ onBack, embedded = false, role = 'admin' }:
                                     View
                                   </button>
                                 ) : null}
-                                <div className="text-xs font-semibold text-gray-700">{d.kind}</div>
+                                <span className="inline-flex items-center rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-gray-700 ring-1 ring-gray-200">
+                                  {d.kind}
+                                </span>
                               </div>
                             </div>
                           ))}
@@ -862,43 +984,45 @@ export default function AdminPanel({ onBack, embedded = false, role = 'admin' }:
                     </div>
                   </div>
 
-                  <div className="rounded-2xl border border-gray-200 bg-white overflow-hidden">
-                    <div className="p-4 border-b border-gray-100">
-                      <div className="text-sm font-semibold text-gray-900">Update status</div>
-                      <div className="text-xs text-gray-600">Adds a timeline event with timestamp.</div>
-                    </div>
-                    <div className="p-4 space-y-3">
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <select
-                          value={nextStatus}
-                          onChange={(e) => setNextStatus(e.target.value as OrderStatus)}
-                          className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm"
-                        >
-                          {STATUSES.map((s) => (
-                            <option key={s} value={s}>
-                              {s}
-                            </option>
-                          ))}
-                        </select>
-                        <button
-                          type="button"
-                          onClick={applyStatusUpdate}
-                          className="rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-gray-800 transition-colors"
-                        >
-                          Apply
-                        </button>
+                  {!isEmployee ? (
+                    <div className="rounded-2xl border border-gray-200 bg-white overflow-hidden">
+                      <div className="p-4 border-b border-gray-100">
+                        <div className="text-sm font-semibold text-gray-900">Update status</div>
+                        <div className="text-xs text-gray-600">Adds a timeline event with timestamp.</div>
                       </div>
+                      <div className="p-4 space-y-3">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <select
+                            value={nextStatus}
+                            onChange={(e) => setNextStatus(e.target.value as OrderStatus)}
+                            className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm"
+                          >
+                            {STATUSES.map((s) => (
+                              <option key={s} value={s}>
+                                {s}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            onClick={applyStatusUpdate}
+                            className="rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-gray-800 transition-colors"
+                          >
+                            Apply
+                          </button>
+                        </div>
 
-                      <textarea
-                        value={note}
-                        onChange={(e) => setNote(e.target.value)}
-                        className="w-full min-h-[90px] rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm"
-                        placeholder="Optional note (shows in customer tracking timeline)"
-                      />
+                        <textarea
+                          value={note}
+                          onChange={(e) => setNote(e.target.value)}
+                          className="w-full min-h-[90px] rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm"
+                          placeholder="Optional note (shows in customer tracking timeline)"
+                        />
 
-                      {actionError ? <div className="text-sm text-red-700">{actionError}</div> : null}
+                        {actionError ? <div className="text-sm text-red-700">{actionError}</div> : null}
+                      </div>
                     </div>
-                  </div>
+                  ) : null}
 
                   <div className="rounded-2xl border border-gray-200 bg-white overflow-hidden">
                     <div className="p-4 border-b border-gray-100">

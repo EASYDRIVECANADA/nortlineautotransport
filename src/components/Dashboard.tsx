@@ -5,7 +5,7 @@ import { supabase } from '../lib/supabaseClient';
 import LocalOrders from './LocalOrders';
 import ReceiptHistory from './ReceiptHistory';
 import { createSavedQuoteOrder } from '../orders/supabaseOrders';
-import { makeLocalOrderId } from '../orders/localOrders';
+import { createLocalDraftOrderFromQuote, makeLocalOrderId } from '../orders/localOrders';
 
 type CheckoutDraft = {
   id: string;
@@ -34,6 +34,7 @@ export default function Dashboard({ onLogout }: DashboardProps) {
   const DRAFTS_STORAGE_KEY = 'ed_checkout_drafts';
   const DRAFTS_STORAGE_KEY_V1 = 'ed_checkout_drafts_v1';
   const LATEST_QUOTE_STORAGE_KEY = 'ed_latest_quote_ready';
+  const OPEN_OFFER_ORDER_ID_KEY = 'ed_open_offer_order_id';
   const [isLogoutOpen, setIsLogoutOpen] = useState(false);
   const [isDeleteDraftOpen, setIsDeleteDraftOpen] = useState(false);
   const [deleteDraftId, setDeleteDraftId] = useState<string | null>(null);
@@ -50,12 +51,183 @@ export default function Dashboard({ onLogout }: DashboardProps) {
   const [latestQuote, setLatestQuote] = useState<QuoteReadyPayload | null>(null);
   const [saveQuoteMessage, setSaveQuoteMessage] = useState<string | null>(null);
   const [saveQuoteError, setSaveQuoteError] = useState(false);
+  const [draftOfferLoadingId, setDraftOfferLoadingId] = useState<string | null>(null);
   const [draftUserKey, setDraftUserKey] = useState<string>('anon');
+
+  const activeNav: 'home' | 'tracking' | 'receipts' | 'drafts' = showOrders
+    ? 'tracking'
+    : showReceiptHistory
+      ? 'receipts'
+      : showDrafts
+        ? 'drafts'
+        : 'home';
+
+  const navButtonClass = (active: boolean) =>
+    `flex items-center space-x-1 sm:space-x-2 px-2 sm:px-3 py-2 rounded-xl text-gray-700 transition-colors ${
+      active ? 'bg-cyan-50 text-cyan-700 ring-1 ring-cyan-200' : 'hover:text-cyan-600 hover:bg-cyan-50'
+    }`;
 
   const getDraftStorageKey = (suffix?: 'v1') => {
     const base = suffix === 'v1' ? DRAFTS_STORAGE_KEY_V1 : DRAFTS_STORAGE_KEY;
     const safeUser = String(draftUserKey ?? '').trim() || 'anon';
     return `${base}__${safeUser}`;
+  };
+
+  const isLocalDevAuthEnabled = () => {
+    try {
+      return window.location.hostname === 'localhost' && localStorage.getItem('ed_dev_auth') === '1';
+    } catch {
+      return false;
+    }
+  };
+
+  const requireSignedInUserId = async (): Promise<string | null> => {
+    if (!supabase) return null;
+    try {
+      const { data: userData } = await supabase.auth.getUser();
+      const id = String(userData?.user?.id ?? '').trim();
+      if (id) return id;
+    } catch {
+      // ignore
+    }
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const id = String(sessionData?.session?.user?.id ?? '').trim();
+      if (id) return id;
+    } catch {
+      // ignore
+    }
+    return null;
+  };
+
+  const saveDraftToSupabaseAndOffer = async (draft: CheckoutDraft) => {
+    if (!supabase) {
+      setSaveQuoteMessage('Service is currently unavailable. Please try again later.');
+      setSaveQuoteError(true);
+      return;
+    }
+
+    if (isLocalDevAuthEnabled()) {
+      const formData = isRecord(draft.formData) ? (draft.formData as Record<string, unknown>) : null;
+      const costData = isRecord(draft.costData) ? (draft.costData as Record<string, unknown>) : null;
+      if (!formData || !costData) {
+        setSaveQuoteMessage('This draft is missing a quote. Please Resume and calculate a quote first.');
+        setSaveQuoteError(true);
+        return;
+      }
+
+      const pricingCity = typeof costData.pricingCity === 'string' ? costData.pricingCity : '';
+      const pickupLocation = isRecord(formData.pickup_location) ? (formData.pickup_location as Record<string, unknown>) : null;
+      const dropoffLocation = isRecord(formData.dropoff_location) ? (formData.dropoff_location as Record<string, unknown>) : null;
+      const pickupCity = pickupLocation && typeof pickupLocation.city === 'string' ? pickupLocation.city : '';
+      const dropoffCity = dropoffLocation && typeof dropoffLocation.city === 'string' ? dropoffLocation.city : '';
+      const routeArea = String(pricingCity || dropoffCity || pickupCity || '').trim();
+
+      const baseSubtotal = readNumber(costData.cost);
+      const formLoadingFee = readNumber((formData as Record<string, unknown>)?.vehicle_loading_fee);
+      const loadingFee = Number.isFinite(formLoadingFee) && formLoadingFee > 0 ? formLoadingFee : 0;
+      const subtotal = Number.isFinite(baseSubtotal) && baseSubtotal > 0 ? baseSubtotal + loadingFee : 0;
+      if (!subtotal) {
+        setSaveQuoteMessage('Quote amount is missing. Please Resume and calculate a quote first.');
+        setSaveQuoteError(true);
+        return;
+      }
+
+      const service = isRecord(formData.service) ? (formData.service as Record<string, unknown>) : null;
+      const serviceType = String(service?.service_type ?? 'pickup_one_way').trim() || 'pickup_one_way';
+
+      const created = createLocalDraftOrderFromQuote({
+        route_area: routeArea,
+        service_type: serviceType === 'delivery_one_way' ? 'delivery_one_way' : 'pickup_one_way',
+        vehicle_type: 'standard',
+        price_before_tax: subtotal,
+        form_data: { ...formData, costEstimate: costData },
+        documents: null,
+      });
+
+      try {
+        localStorage.setItem(OPEN_OFFER_ORDER_ID_KEY, String(created.id ?? '').trim());
+      } catch {
+        // ignore
+      }
+
+      setSaveQuoteMessage('Saved locally. Opening offer...');
+      setSaveQuoteError(false);
+      setShowOrders(true);
+      setShowReceiptHistory(false);
+      setShowDrafts(false);
+      return;
+    }
+
+    setDraftOfferLoadingId(draft.id);
+    setSaveQuoteMessage(null);
+    setSaveQuoteError(false);
+
+    try {
+      const userId = await requireSignedInUserId();
+      if (!userId) {
+        setSaveQuoteMessage('Please sign in to make an offer.');
+        setSaveQuoteError(true);
+        return;
+      }
+
+      const formData = isRecord(draft.formData) ? (draft.formData as Record<string, unknown>) : null;
+      const costData = isRecord(draft.costData) ? (draft.costData as Record<string, unknown>) : null;
+      if (!formData || !costData) {
+        setSaveQuoteMessage('This draft is missing a quote. Please Resume and calculate a quote first.');
+        setSaveQuoteError(true);
+        return;
+      }
+
+      const pricingCity = typeof costData.pricingCity === 'string' ? costData.pricingCity : '';
+      const pickupLocation = isRecord(formData.pickup_location) ? (formData.pickup_location as Record<string, unknown>) : null;
+      const dropoffLocation = isRecord(formData.dropoff_location) ? (formData.dropoff_location as Record<string, unknown>) : null;
+      const pickupCity = pickupLocation && typeof pickupLocation.city === 'string' ? pickupLocation.city : '';
+      const dropoffCity = dropoffLocation && typeof dropoffLocation.city === 'string' ? dropoffLocation.city : '';
+      const routeArea = String(pricingCity || dropoffCity || pickupCity || '').trim();
+
+      const baseSubtotal = readNumber(costData.cost);
+      const formLoadingFee = readNumber((formData as Record<string, unknown>)?.vehicle_loading_fee);
+      const loadingFee = Number.isFinite(formLoadingFee) && formLoadingFee > 0 ? formLoadingFee : 0;
+      const subtotal = Number.isFinite(baseSubtotal) && baseSubtotal > 0 ? baseSubtotal + loadingFee : 0;
+      if (!subtotal) {
+        setSaveQuoteMessage('Quote amount is missing. Please Resume and calculate a quote first.');
+        setSaveQuoteError(true);
+        return;
+      }
+
+      const service = isRecord(formData.service) ? (formData.service as Record<string, unknown>) : null;
+      const serviceType = String(service?.service_type ?? 'pickup_one_way').trim() || 'pickup_one_way';
+
+      const orderCode = makeLocalOrderId();
+      const created = await createSavedQuoteOrder({
+        order_code: orderCode,
+        route_area: routeArea,
+        service_type: serviceType,
+        vehicle_type: 'standard',
+        price_before_tax: subtotal,
+        currency: 'CAD',
+        form_data: { ...formData, costEstimate: costData },
+        documents: null,
+      });
+
+      try {
+        localStorage.setItem(OPEN_OFFER_ORDER_ID_KEY, String(created.id ?? '').trim());
+      } catch {
+        // ignore
+      }
+
+      setSaveQuoteMessage('Saved to Draft Orders. Opening offer...');
+      setSaveQuoteError(false);
+      setShowOrders(true);
+      setShowReceiptHistory(false);
+      setShowDrafts(false);
+    } catch (e) {
+      setSaveQuoteMessage(e instanceof Error ? e.message : 'Failed to save quote');
+      setSaveQuoteError(true);
+    } finally {
+      setDraftOfferLoadingId(null);
+    }
   };
 
   useEffect(() => {
@@ -153,6 +325,19 @@ export default function Dashboard({ onLogout }: DashboardProps) {
   };
 
   useEffect(() => {
+    const devAuthed = (() => {
+      try {
+        return window.location.hostname === 'localhost' && localStorage.getItem('ed_dev_auth') === '1';
+      } catch {
+        return false;
+      }
+    })();
+
+    if (devAuthed) {
+      setDraftUserKey('local-dev');
+      return;
+    }
+
     if (!supabase) {
       setDraftUserKey('anon');
       return;
@@ -237,9 +422,15 @@ export default function Dashboard({ onLogout }: DashboardProps) {
       return;
     }
 
+    if (isLocalDevAuthEnabled()) {
+      setSaveQuoteMessage('Saving quotes requires a real Google/Supabase sign-in. Local dev auth is enabled on this browser.');
+      setSaveQuoteError(true);
+      return;
+    }
+
     try {
-      const { data } = await supabase.auth.getSession();
-      if (!data?.session?.user?.id) {
+      const userId = await requireSignedInUserId();
+      if (!userId) {
         setSaveQuoteMessage('Please sign in to save this quote.');
         setSaveQuoteError(true);
         return;
@@ -599,7 +790,7 @@ export default function Dashboard({ onLogout }: DashboardProps) {
                   setShowDrafts(false);
                   setPendingUploadReset(true);
                 }}
-                className="flex items-center space-x-1 sm:space-x-2 px-2 sm:px-3 py-2 rounded-lg text-gray-600 hover:text-cyan-500 hover:bg-cyan-50 transition-all"
+                className={navButtonClass(activeNav === 'home')}
               >
                 <Home className="w-4 h-4 sm:w-5 sm:h-5" />
                 <span className="hidden sm:inline text-sm">Home</span>
@@ -613,7 +804,7 @@ export default function Dashboard({ onLogout }: DashboardProps) {
                   setShowReceiptHistory(false);
                   setShowDrafts(false);
                 }}
-                className="flex items-center space-x-1 sm:space-x-2 px-2 sm:px-3 py-2 rounded-lg text-gray-600 hover:text-cyan-500 hover:bg-cyan-50 transition-all"
+                className={navButtonClass(activeNav === 'tracking')}
               >
                 <Package className="w-4 h-4 sm:w-5 sm:h-5" />
                 <span className="hidden sm:inline text-sm">Tracking</span>
@@ -626,7 +817,7 @@ export default function Dashboard({ onLogout }: DashboardProps) {
                   setShowOrders(false);
                   setShowDrafts(false);
                 }}
-                className="flex items-center space-x-1 sm:space-x-2 px-2 sm:px-3 py-2 rounded-lg text-gray-600 hover:text-cyan-500 hover:bg-cyan-50 transition-all"
+                className={navButtonClass(activeNav === 'receipts')}
               >
                 <FileText className="w-4 h-4 sm:w-5 sm:h-5" />
                 <span className="hidden sm:inline text-sm">Receipts</span>
@@ -640,7 +831,7 @@ export default function Dashboard({ onLogout }: DashboardProps) {
                   setShowReceiptHistory(false);
                   setShowOrders(false);
                 }}
-                className="flex items-center space-x-1 sm:space-x-2 px-2 sm:px-3 py-2 rounded-lg text-gray-600 hover:text-cyan-500 hover:bg-cyan-50 transition-all"
+                className={navButtonClass(activeNav === 'drafts')}
               >
                 <Clock className="w-4 h-4 sm:w-5 sm:h-5" />
                 <span className="hidden sm:inline text-sm">Drafts</span>
@@ -731,18 +922,28 @@ export default function Dashboard({ onLogout }: DashboardProps) {
           ) : showOrders ? (
             <LocalOrders embed onBack={() => setShowOrders(false)} />
           ) : showDrafts ? (
-            <div className="rounded-2xl bg-white border border-gray-200 shadow-sm">
-              <div className="px-4 sm:px-6 py-4 sm:py-5 border-b border-gray-100 flex items-center justify-start">
-                <div>
-                  <div className="text-base sm:text-lg font-semibold text-gray-900">Drafts</div>
-                  <div className="text-xs sm:text-sm text-gray-600">Pending payments saved from checkout</div>
+            <div className="rounded-2xl bg-white border border-gray-200 shadow-sm overflow-hidden">
+              <div className="px-4 sm:px-6 py-4 sm:py-5 border-b border-gray-100">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                  <div>
+                    <div className="text-base sm:text-lg font-bold text-gray-900">Drafts</div>
+                    <div className="mt-1 text-xs sm:text-sm text-gray-600">Saved quotes from checkout. Resume, delete, or make an offer.</div>
+                  </div>
+                  <div className="inline-flex items-center gap-2">
+                    <span className="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-800 ring-1 ring-gray-200">
+                      {drafts.length} total
+                    </span>
+                  </div>
                 </div>
               </div>
               <div className="px-4 sm:px-6 py-4 sm:py-5">
+                {saveQuoteMessage ? (
+                  <div className={`mb-3 text-sm font-medium ${saveQuoteError ? 'text-red-600' : 'text-emerald-700'}`}>{saveQuoteMessage}</div>
+                ) : null}
                 {drafts.length === 0 ? (
                   <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-600">No drafts yet.</div>
                 ) : (
-                  <div className="space-y-3">
+                  <div className="grid grid-cols-1 gap-3">
                     {drafts.map((d) => {
                       const created = new Date(d.createdAt);
                       const costData = isRecord(d.costData) ? (d.costData as Record<string, unknown>) : null;
@@ -767,16 +968,38 @@ export default function Dashboard({ onLogout }: DashboardProps) {
                               resumeDraft(d);
                             }
                           }}
-                          className="rounded-xl border border-gray-200 bg-white p-4 cursor-pointer hover:border-cyan-300 hover:shadow-sm transition-colors"
+                          className="rounded-2xl border border-gray-200 bg-white p-4 cursor-pointer hover:border-cyan-300 hover:shadow-sm transition-colors"
                         >
-                          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-                            <div>
-                              <div className="text-sm font-semibold text-gray-900">{label}</div>
-                              <div className="mt-1 text-xs text-gray-600">Saved: {Number.isFinite(created.getTime()) ? created.toLocaleString() : d.createdAt}</div>
-                              <div className="mt-2 text-sm text-gray-700">{total ? `Subtotal: ${total}` : 'Subtotal: -'}</div>
-                              <div className="mt-1 text-xs text-gray-500">Documents: {Number(d.docCount) || 0}</div>
+                          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                            <div className="min-w-0">
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <div className="text-sm font-bold text-gray-900 truncate">{label}</div>
+                                  <div className="mt-0.5 text-xs text-gray-600 truncate">
+                                    Saved: {Number.isFinite(created.getTime()) ? created.toLocaleString() : d.createdAt}
+                                  </div>
+                                </div>
+                                <div className="shrink-0">
+                                  <span className="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-800 ring-1 ring-gray-200">
+                                    {total ? `Subtotal ${total}` : 'Subtotal -'}
+                                  </span>
+                                </div>
+                              </div>
+                              <div className="mt-2 text-xs text-gray-500">Documents: {Number(d.docCount) || 0}</div>
                             </div>
-                            <div className="flex flex-col sm:flex-row gap-2">
+
+                            <div className="flex flex-col sm:flex-row gap-2 sm:justify-end">
+                              <button
+                                type="button"
+                                disabled={draftOfferLoadingId === d.id}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void saveDraftToSupabaseAndOffer(d);
+                                }}
+                                className="inline-flex justify-center rounded-xl bg-cyan-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-cyan-700 transition-colors disabled:opacity-60"
+                              >
+                                {draftOfferLoadingId === d.id ? 'Saving…' : 'Make Offer'}
+                              </button>
                               <button
                                 type="button"
                                 onClick={(e) => {

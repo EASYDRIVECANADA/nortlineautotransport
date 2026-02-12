@@ -8,6 +8,7 @@ import {
   updateOrderPricingAndStageAsStaff,
   type StaffOfferRow,
 } from '../orders/supabaseOrders';
+import { listLocalPendingOffersAsStaff, resolveLocalOfferAsStaff } from '../orders/localOrders';
 import {
   DEFAULT_DISTANCE_RATE_PER_KM,
   OFFICIAL_CITY_TOTAL_PRICES,
@@ -260,15 +261,10 @@ export default function AdminPortal({ onExit }: AdminPortalProps) {
 
   const loadOffers = async () => {
     if (!session || session.role !== 'admin') return;
-    if (isLocalDev) {
-      setOffers([]);
-      setOffersLoading(false);
-      return;
-    }
     setOffersLoading(true);
     setError(null);
     try {
-      const rows = await listPendingOffersAsStaff();
+      const rows = isLocalDev ? (listLocalPendingOffersAsStaff() as unknown as StaffOfferRow[]) : await listPendingOffersAsStaff();
       setOffers(rows);
       setOfferAdminNotes((prev) => {
         const next = { ...prev };
@@ -295,27 +291,26 @@ export default function AdminPortal({ onExit }: AdminPortalProps) {
 
   const resolveOffer = async (offer: StaffOfferRow, action: 'approved' | 'declined') => {
     if (!session || session.role !== 'admin') return;
-    if (isLocalDev) {
-      setError('Offers are not available in local dev mode.');
-      return;
-    }
-
     const adminNote = String(offerAdminNotes[offer.id] ?? '').trim() || null;
     setOffersActionLoading(offer.id);
     setMessage(null);
     setError(null);
     try {
-      await updateOfferAsStaff(offer.id, action, adminNote);
-      if (action === 'approved') {
-        await updateOrderPricingAndStageAsStaff(offer.order_id, {
-          final_price_before_tax: Number(offer.offer_amount),
-          order_stage: 'pending_payment',
-        });
+      if (isLocalDev) {
+        resolveLocalOfferAsStaff(offer.id, action, adminNote);
       } else {
-        await updateOrderPricingAndStageAsStaff(offer.order_id, {
-          final_price_before_tax: null,
-          order_stage: 'draft',
-        });
+        await updateOfferAsStaff(offer.id, action, adminNote);
+        if (action === 'approved') {
+          await updateOrderPricingAndStageAsStaff(offer.order_id, {
+            final_price_before_tax: Number(offer.offer_amount),
+            order_stage: 'pending_payment',
+          });
+        } else {
+          await updateOrderPricingAndStageAsStaff(offer.order_id, {
+            final_price_before_tax: null,
+            order_stage: 'draft',
+          });
+        }
       }
       setMessage(action === 'approved' ? 'Offer approved.' : 'Offer declined.');
       await loadOffers();

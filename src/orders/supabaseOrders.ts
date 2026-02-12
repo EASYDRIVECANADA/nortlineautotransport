@@ -263,6 +263,24 @@ export const getMyPendingOfferForOrder = async (orderId: string) => {
   return (data as DbOrderOfferRow | null) ?? null;
 };
 
+export const getMyLatestOfferForOrder = async (orderId: string) => {
+  const supabase = requireSupabase();
+  const user = await getCurrentUser();
+  if (!user?.id) return null;
+
+  const { data, error } = await supabase
+    .from('order_offers')
+    .select('id, order_id, user_id, offer_amount, notes, status, admin_note, created_at, reviewed_at')
+    .eq('order_id', orderId)
+    .eq('user_id', user.id)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw error;
+  return (data as DbOrderOfferRow | null) ?? null;
+};
+
 export const createOfferForOrder = async (orderId: string, offerAmount: number, notes?: string) => {
   const supabase = requireSupabase();
   const user = await getCurrentUser();
@@ -284,6 +302,16 @@ export const createOfferForOrder = async (orderId: string, offerAmount: number, 
     .single();
 
   if (error) throw error;
+
+  try {
+    const at = new Date().toISOString();
+    await supabase
+      .from('orders')
+      .update({ order_stage: 'in_negotiation', updated_at: at })
+      .eq('id', orderId);
+  } catch {
+    // ignore (offer submission can still succeed even if order stage update is blocked by RLS)
+  }
   return data as DbOrderOfferRow;
 };
 
